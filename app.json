@@ -1,0 +1,49 @@
+{
+  "expo": {
+    "name": "platform-mobile",
+    "slug": "platform-mobile",
+    "newArchEnabled": false,
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "ios": {
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSCameraUsageDescription": "Camera access is needed to go live and be seen by your viewers.",
+        "NSMicrophoneUsageDescription": "Microphone access is needed to go live and PK with other hosts."
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#E6F4FE",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false,
+      "permissions": [
+        "CAMERA",
+        "RECORD_AUDIO",
+        "MODIFY_AUDIO_SETTINGS"
+      ],
+      "package": "com.ryda90.platformmobile"
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      "expo-dev-client",
+      "expo-secure-store"
+    ],
+    "extra": {
+      "apiBaseUrl": "http://192.168.18.4:3000/api/v1",
+      "agoraAppId": "482c0ea270be4aa8adff952ceb592bd8",
+      "imgbbApiKey": "fc543022e03ac534d0e12ea2435c43b7",
+      "eas": {
+        "projectId": "327e4aef-c085-4055-a4be-ef7160cdd89b"
+      }
+    },
+    "owner": "ryda9"
+  }
+}
