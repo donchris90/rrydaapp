@@ -13,6 +13,7 @@ import { AgoraVideoView } from '../../components/AgoraVideoView';
 import { LiveChatFeed } from '../../components/LiveChatFeed';
 import { LiveHeaderBar } from '../../components/LiveHeaderBar';
 import { GiftTicker } from '../../components/GiftTicker';
+import { FloatingHeartsOverlay } from '../../components/FloatingHeartsOverlay';
 import { LiveToolsSheet } from '../../components/LiveToolsSheet';
 import { GiftSheet } from '../../components/GiftSheet';
 import { useAgoraEngine } from '../../live/useAgoraEngine';
@@ -75,23 +76,25 @@ export function LiveViewerScreen() {
 
   return (
     <View style={{ flex: 1, paddingTop: insets.top }}>
-      {remoteUid != null ? (
-        <AgoraVideoView uid={remoteUid} style={StyleSheet.absoluteFill} />
-      ) : (
-        <GradientBackground style={StyleSheet.absoluteFill}>
-          <View style={styles.videoArea}>
-            <Ionicons
-              name={agoraError ? 'videocam-off-outline' : 'hourglass-outline'}
-              size={40}
-              color={colors.textMuted}
-            />
-            <Text style={styles.videoPlaceholderText}>
-              {agoraError ? 'Video unavailable in this build' : 'Waiting for host video...'}
-            </Text>
-            {agoraError && <Text style={styles.videoPlaceholderSubtext}>{agoraError}</Text>}
-          </View>
-        </GradientBackground>
-      )}
+      <FloatingHeartsOverlay>
+        {remoteUid != null ? (
+          <AgoraVideoView uid={remoteUid} style={StyleSheet.absoluteFill} />
+        ) : (
+          <GradientBackground style={StyleSheet.absoluteFill}>
+            <View style={styles.videoArea}>
+              <Ionicons
+                name={agoraError ? 'videocam-off-outline' : 'hourglass-outline'}
+                size={40}
+                color={colors.textMuted}
+              />
+              <Text style={styles.videoPlaceholderText}>
+                {agoraError ? 'Video unavailable in this build' : 'Waiting for host video...'}
+              </Text>
+              {agoraError && <Text style={styles.videoPlaceholderSubtext}>{agoraError}</Text>}
+            </View>
+          </GradientBackground>
+        )}
+      </FloatingHeartsOverlay>
 
       <View style={styles.header}>
         <LiveHeaderBar
@@ -101,7 +104,7 @@ export function LiveViewerScreen() {
           isOwnSession={session.hostId === user?.id}
           onClose={() => navigation.goBack()}
         />
-        <GiftTicker event={giftEvents[giftEvents.length - 1]} />
+        <GiftTicker events={giftEvents} />
       </View>
 
       {/* Bottom action bar */}

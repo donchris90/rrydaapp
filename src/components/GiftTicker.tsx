@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useMemo, useRef } from 'react';
 import { View, Text, StyleSheet, Animated } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import type { GiftEvent } from '../live/useLiveChat';
@@ -10,8 +10,26 @@ import { colors, spacing, radii, type } from '../theme';
 // time with a brief fade, rather than a permanent scrolling list —
 // matches the reference app's transient announcement style more than a
 // persistent log would.
-export function GiftTicker({ event }: { event: GiftEvent | undefined }) {
+//
+// Combo count is computed from the real trailing events in the stream —
+// consecutive events with the same senderId+giftId count as one combo,
+// same as every other "gift streak" UI. Not a separate counter someone
+// could desync from what actually happened; it's read directly off the
+// real event history each time a new one arrives.
+export function GiftTicker({ events }: { events: GiftEvent[] }) {
   const opacity = useRef(new Animated.Value(0)).current;
+  const event = events[events.length - 1];
+
+  const comboCount = useMemo(() => {
+    if (!event) return 1;
+    let count = 0;
+    for (let i = events.length - 1; i >= 0; i--) {
+      const e = events[i];
+      if (e.senderId === event.senderId && e.giftId === event.giftId) count++;
+      else break;
+    }
+    return count;
+  }, [events, event]);
 
   useEffect(() => {
     if (!event) return;
@@ -28,7 +46,7 @@ export function GiftTicker({ event }: { event: GiftEvent | undefined }) {
     <Animated.View style={[styles.wrap, { opacity }]}>
       <LinearGradient colors={[colors.gold, colors.goldDeep]} style={styles.banner} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}>
         <Text style={styles.text} numberOfLines={1}>
-          Someone sent a gift · {event.coinAmount} coins
+          Someone sent a gift · {event.coinAmount} coins{comboCount > 1 ? ` · x${comboCount}` : ''}
         </Text>
       </LinearGradient>
     </Animated.View>
