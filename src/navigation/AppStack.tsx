@@ -22,19 +22,23 @@ import { RewardScreen } from '../screens/profile/RewardScreen';
 import { RoomScreen } from '../screens/party/RoomScreen';
 import { PreRoomScreen } from '../screens/party/PreRoomScreen';
 import { CrashScreen } from '../screens/game/CrashScreen';
+import { ConversationScreen } from '../screens/inbox/ConversationScreen';
+import { CallScreen } from '../screens/calls/CallScreen';
+import { IncomingCallOverlay } from '../components/IncomingCallOverlay';
 import { colors } from '../theme';
 
 const Stack = createNativeStackNavigator<AppStackParamList>();
 
 export function AppStack() {
   return (
-    <Stack.Navigator
-      screenOptions={{
-        headerStyle: { backgroundColor: colors.bgDeepest },
-        headerTintColor: colors.textPrimary,
-        headerShadowVisible: false,
-      }}
-    >
+    <>
+      <Stack.Navigator
+        screenOptions={{
+          headerStyle: { backgroundColor: colors.bgDeepest },
+          headerTintColor: colors.textPrimary,
+          headerShadowVisible: false,
+        }}
+      >
       <Stack.Screen name="MainTabs" component={MainTabs} options={{ headerShown: false }} />
       <Stack.Screen name="GameCenter" component={GameCenterScreen} options={{ title: 'Game Center' }} />
       <Stack.Screen name="SumDice" component={SumDiceScreen} options={{ title: 'Lucky Number' }} />
@@ -56,6 +60,10 @@ export function AppStack() {
       <Stack.Screen name="Room" component={RoomScreen} options={{ headerShown: false }} />
       <Stack.Screen name="PreRoom" component={PreRoomScreen} options={{ headerShown: false }} />
       <Stack.Screen name="CrashGame" component={CrashScreen} options={{ headerShown: false }} />
+      <Stack.Screen name="Conversation" component={ConversationScreen} options={{ headerShown: false }} />
+      <Stack.Screen name="Call" component={CallScreen} options={{ headerShown: false, presentation: 'fullScreenModal' }} />
     </Stack.Navigator>
+      <IncomingCallOverlay />
+    </>
   );
 }

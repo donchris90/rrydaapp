@@ -45,3 +45,21 @@ export async function fetchIncomingPk(): Promise<PkBattle[]> {
   const response = await apiClient.get<PkBattle[]>('/pk/incoming');
   return response.data;
 }
+
+export interface ActivePkForHost {
+  battle: PkBattle;
+  opponentId: string;
+  // Null is a real, meaningful state — the battle is active but the
+  // opponent isn't currently broadcasting. See pk.service.ts's
+  // findActiveForHost() comment.
+  opponentSession: { id: string; providerChannel: string; title: string } | null;
+}
+
+// The missing link — given whichever host a viewer is currently
+// watching, this answers "are they in a PK battle right now, and if so
+// what's the opponent's live channel to join too." Real null (not an
+// error) when there's no active battle for this host at all.
+export async function fetchActivePkForHost(hostId: string): Promise<ActivePkForHost | null> {
+  const response = await apiClient.get<ActivePkForHost | null>(`/pk/active-for-host/${hostId}`);
+  return response.data;
+}

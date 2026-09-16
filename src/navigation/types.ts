@@ -33,4 +33,6 @@ export type AppStackParamList = {
   Room: { roomId: string; initialVideoEnabled?: boolean };
   PreRoom: undefined;
   CrashGame: undefined;
+  Conversation: { userId: string; displayName: string | null };
+  Call: { callId: string; otherUserId: string; otherUserDisplayName: string | null; isIncoming: boolean };
 };

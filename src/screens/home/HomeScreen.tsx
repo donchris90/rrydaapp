@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import { Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { LinearGradient } from 'expo-linear-gradient';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useQuery } from '@tanstack/react-query';
@@ -22,13 +23,13 @@ import { colors, radii, spacing, type } from '../../theme';
 
 type FeedTab = 'live' | 'following' | 'discover' | 'forYou' | 'new' | 'nearby';
 
-const TABS: { key: FeedTab; label: string }[] = [
-  { key: 'live', label: 'Live Now' },
-  { key: 'following', label: 'Following' },
-  { key: 'discover', label: 'Explore' },
-  { key: 'forYou', label: 'For You' },
-  { key: 'new', label: 'New' },
-  { key: 'nearby', label: 'Nearby' },
+const TABS: { key: FeedTab; label: string; icon: keyof typeof Ionicons.glyphMap }[] = [
+  { key: 'live', label: 'Live Now', icon: 'radio' },
+  { key: 'following', label: 'Following', icon: 'people' },
+  { key: 'discover', label: 'Explore', icon: 'compass' },
+  { key: 'forYou', label: 'For You', icon: 'sparkles' },
+  { key: 'new', label: 'New', icon: 'star' },
+  { key: 'nearby', label: 'Nearby', icon: 'location' },
 ];
 
 // Redesigned around a real signal: who is actually live right now (GET
@@ -123,7 +124,7 @@ export function HomeScreen() {
         <FadeInUp index={0} style={styles.topRow}>
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.tabRow}>
             {TABS.map((t) => (
-              <TabButton key={t.key} label={t.label} active={tab === t.key} onPress={() => setTab(t.key)} />
+              <TabButton key={t.key} label={t.label} icon={t.icon} active={tab === t.key} onPress={() => setTab(t.key)} />
             ))}
           </ScrollView>
           <Pressable onPress={() => navigation.navigate('HonorRanking')} hitSlop={12} style={styles.iconButton}>
@@ -223,11 +224,30 @@ export function HomeScreen() {
   );
 }
 
-function TabButton({ label, active, onPress }: { label: string; active: boolean; onPress: () => void }) {
+function TabButton({
+  label,
+  icon,
+  active,
+  onPress,
+}: {
+  label: string;
+  icon: keyof typeof Ionicons.glyphMap;
+  active: boolean;
+  onPress: () => void;
+}) {
   return (
-    <PressableScale onPress={onPress} style={styles.tabButton}>
-      <Text style={[styles.tabLabel, active && styles.tabLabelActive]}>{label}</Text>
-      {active && <View style={styles.tabUnderline} />}
+    <PressableScale onPress={onPress} style={styles.tabButtonWrap}>
+      {active ? (
+        <LinearGradient colors={[colors.primary, colors.pink]} style={styles.tabPill} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}>
+          <Ionicons name={icon} size={14} color="#FFF" />
+          <Text style={styles.tabLabelActive}>{label}</Text>
+        </LinearGradient>
+      ) : (
+        <View style={styles.tabPillIdle}>
+          <Ionicons name={icon} size={14} color={colors.textMuted} />
+          <Text style={styles.tabLabel}>{label}</Text>
+        </View>
+      )}
     </PressableScale>
   );
 }
@@ -251,19 +271,31 @@ const styles = StyleSheet.create({
   },
   tabRow: {
     flexDirection: 'row',
-    gap: spacing.lg,
+    gap: spacing.xs,
     paddingHorizontal: spacing.md,
   },
-  tabButton: { alignItems: 'center' },
-  tabLabel: { ...type.h2, color: colors.textMuted },
-  tabLabelActive: { color: colors.textPrimary },
-  tabUnderline: {
-    marginTop: 4,
-    width: 20,
-    height: 3,
-    borderRadius: 2,
-    backgroundColor: colors.pink,
+  tabButtonWrap: {},
+  tabPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 8,
+    borderRadius: radii.pill,
   },
+  tabPillIdle: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 8,
+    borderRadius: radii.pill,
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.borderLight,
+  },
+  tabLabel: { ...type.caption, color: colors.textMuted, fontWeight: '700' },
+  tabLabelActive: { ...type.caption, color: '#FFF', fontWeight: '800' },
   iconButton: {
     marginLeft: spacing.sm,
     width: 36,

@@ -23,11 +23,16 @@ import {
   endLiveSession,
   fetchMyLiveSession,
   fetchLiveViewers,
+  joinLiveSession,
   type LiveSessionRaw,
   type LiveViewer,
 } from '../../api/live';
+import { fetchActivePkForHost } from '../../api/pk';
+import { fetchWallet } from '../../api/feed';
+import { fetchHonorRanking } from '../../api/ranking';
 import { GradientBackground } from '../../components/GradientBackground';
 import { GradientButton } from '../../components/GradientButton';
+import { PkBattleOverlay } from '../../components/PkBattleOverlay';
 import { FadeInUp } from '../../components/FadeInUp';
 import { Avatar } from '../../components/Avatar';
 import { AgoraVideoView } from '../../components/AgoraVideoView';
@@ -152,6 +157,10 @@ export function GoLiveScreen() {
     setBackground,
     faceShape,
     setFaceShape,
+    secondaryRemoteUid,
+    secondaryConnection,
+    joinSecondaryChannel,
+    leaveSecondaryChannel,
   } = useAgoraEngine({
     channelId: session?.providerChannel ?? '',
     token: token ?? '',
@@ -160,6 +169,39 @@ export function GoLiveScreen() {
   });
 
   const { messages, sendMessage } = useLiveChat('LIVE', session?.id ?? '');
+
+  // Real PK battle detection for the host's own view — polls the same
+  // findActiveForHost endpoint the viewer side uses, keyed on this
+  // user's own id rather than a watched session's hostId.
+  const pkQuery = useQuery({
+    queryKey: ['pk', 'active-for-host', user?.id],
+    queryFn: () => fetchActivePkForHost(user!.id),
+    enabled: !!user?.id && !!session,
+    refetchInterval: 3000,
+  });
+  const activePk = pkQuery.data;
+
+  // Real wallet balance, replacing the hardcoded "0" coin pill — same
+  // fetchWallet endpoint the coin purchase flow and RoomScreen already use.
+  const walletQuery = useQuery({ queryKey: ['wallet'], queryFn: fetchWallet });
+  const rankingQuery = useQuery({ queryKey: ['gifts', 'ranking', 'today'], queryFn: () => fetchHonorRanking('today') });
+  const topGiftToday = rankingQuery.data?.[0]?.honorScore ?? 0;
+
+  const opponentSessionId = activePk?.opponentSession?.id;
+  useEffect(() => {
+    if (!opponentSessionId) {
+      leaveSecondaryChannel();
+      return;
+    }
+    let cancelled = false;
+    joinLiveSession(opponentSessionId).then((result) => {
+      if (!cancelled) joinSecondaryChannel(result.session.providerChannel, result.token);
+    });
+    return () => {
+      cancelled = true;
+      leaveSecondaryChannel();
+    };
+  }, [opponentSessionId]);
 
   const startMutation = useMutation({
     mutationFn: () => createLiveSession({ title: title.trim(), category }),
@@ -299,7 +341,26 @@ export function GoLiveScreen() {
               camera..." placeholder even once the camera was genuinely
               already live locally, only actually swapping in once the
               network channel-join round-trip completed too. */}
-          {!agoraError ? (
+          {activePk ? (
+            <View style={styles.pkSplitRow}>
+              <View style={styles.pkSplitHalf}>
+                {!agoraError ? (
+                  <AgoraVideoView key={engineReady ? 'ready' : 'pending'} uid={0} style={StyleSheet.absoluteFill} />
+                ) : (
+                  <View style={[StyleSheet.absoluteFill, styles.pkSplitPlaceholder]} />
+                )}
+              </View>
+              <View style={styles.pkSplitHalf}>
+                {secondaryRemoteUid != null && secondaryConnection ? (
+                  <AgoraVideoView uid={secondaryRemoteUid} connection={secondaryConnection} style={StyleSheet.absoluteFill} />
+                ) : (
+                  <View style={[StyleSheet.absoluteFill, styles.pkSplitPlaceholder]}>
+                    <Ionicons name="hourglass-outline" size={24} color={colors.textMuted} />
+                  </View>
+                )}
+              </View>
+            </View>
+          ) : !agoraError ? (
             <AgoraVideoView key={engineReady ? 'ready' : 'pending'} uid={0} style={StyleSheet.absoluteFill} />
           ) : (
             <GradientBackground style={StyleSheet.absoluteFill}>
@@ -318,7 +379,7 @@ export function GoLiveScreen() {
         {/* Top bar */}
         <View style={[styles.topBar, { paddingTop: insets.top + spacing.xs }]}>
           <View style={styles.avatarWrap}>
-            <Avatar uri={user?.avatar ?? 'https://i.pravatar.cc/150?img=1'} size={38} />
+            <Avatar name={user?.displayName} imageUrl={user?.avatarUrl} size={38} />
           </View>
           <View style={styles.topBarText}>
             <View style={styles.hostNameRow}>
@@ -333,7 +394,7 @@ export function GoLiveScreen() {
             <Ionicons name="trophy" size={16} color="#FFF" />
           </View>
           <View style={styles.coinPill}>
-            <Text style={styles.coinText}>0</Text>
+            <Text style={styles.coinText}>{walletQuery.data?.coin ?? '—'}</Text>
           </View>
           <Pressable onPress={() => setIsToolsSheetOpen(true)} style={styles.settingsBtn}>
             <Ionicons name="settings-outline" size={20} color="#FFF" />
@@ -346,50 +407,54 @@ export function GoLiveScreen() {
           </Pressable>
         </View>
 
-        {/* Stats bar */}
+        {activePk && (
+          <View style={styles.pkOverlayWrap}>
+            <PkBattleOverlay
+              battle={activePk.battle}
+              hostName={session.title}
+              opponentName={activePk.opponentSession?.title ?? 'Opponent'}
+            />
+          </View>
+        )}
+
+        {/* Rule button — replaces the fake "Hour 100+"/PK-count/16.48%
+            stats bar. Same reasoning as RoomScreen.tsx's fix: no backend
+            data exists for any of those, and I don't know what the
+            percentage was even meant to represent. This opens real
+            static content instead of doing nothing. */}
         <View style={styles.statsBar}>
-          <View style={styles.hourBadge}>
-            <Ionicons name="flame" size={11} color="#FFD700" />
-            <Text style={styles.hourText}>Hour 100+</Text>
-          </View>
-          <View style={styles.pkBadge}>
-            <Ionicons name="git-compare" size={9} color="#FFF" />
-            <Text style={styles.pkBadgeText}>5</Text>
-          </View>
-          <Text style={styles.percentText}>16.48%</Text>
+          <Pressable
+            style={styles.ruleBadge}
+            onPress={() =>
+              Alert.alert(
+                'Live Guidelines',
+                'Be respectful — no harassment or hate speech.\n\nNo nudity or sexual content.\n\nNo scams or attempts to move payments outside the app.\n\nHosts and moderators may remove or ban viewers who break these rules.',
+              )
+            }
+          >
+            <Ionicons name="book-outline" size={11} color="#FFF" />
+            <Text style={styles.ruleText}>Rule</Text>
+          </Pressable>
         </View>
 
-        {/* Team row */}
+        {/* Real ranking figure, replacing the fake "Team U... 0/12" +
+            "#Share Poppo Glory" banner — the latter literally referenced
+            a different app's name (Poppo), leaked through from whatever
+            this screen was originally built against. No real team or
+            share-campaign feature exists here, so this isn't replaced
+            with a reworded fake version — just removed, alongside the
+            "Join my fans club" banner (no real Fan Club feature exists
+            anywhere in this backend, same as established earlier). */}
         <View style={styles.teamRow}>
-          <View style={styles.teamBadge}>
-            <Ionicons name="home" size={14} color="#FFF" />
-            <View style={{ marginLeft: 4 }}>
-              <Text style={styles.teamLabel}>Team U...</Text>
-              <Text style={styles.teamScore}>0/12</Text>
-            </View>
-          </View>
+          <View style={{ flex: 1 }} />
           <LinearGradient
-            colors={['#7B2FF7', '#B621FE']}
+            colors={['#FFC24B', '#E66B08']}
             start={{ x: 0, y: 0 }}
             end={{ x: 1, y: 0 }}
-            style={styles.shareBadge}
+            style={styles.luckyRankBadge}
           >
-            <Text style={styles.shareTitle}>#Share Poppo Glory</Text>
-            <Text style={styles.shareSub}>Post and win up to 8,000</Text>
-            <Text style={styles.shareDate}>24/08/15/08</Text>
-          </LinearGradient>
-        </View>
-
-        {/* Fan club banner */}
-        <View style={styles.floatArea}>
-          <LinearGradient
-            colors={['#B06AB3', '#E0A9F5']}
-            start={{ x: 0, y: 0 }}
-            end={{ x: 1, y: 0 }}
-            style={styles.fanClubBanner}
-          >
-            <Ionicons name="megaphone" size={12} color="#FFF" />
-            <Text style={styles.fanClubText}>Join my fans club</Text>
+            <Text style={styles.luckyRankTitle}>Top Gift Today</Text>
+            <Text style={styles.luckyRankSub}>{rankingQuery.isLoading ? '...' : topGiftToday.toLocaleString()}</Text>
           </LinearGradient>
         </View>
 
@@ -667,6 +732,10 @@ export function GoLiveScreen() {
 const SIDEBAR_W = 38;
 
 const styles = StyleSheet.create({
+  pkSplitRow: { flex: 1, flexDirection: 'row' },
+  pkSplitHalf: { flex: 1, overflow: 'hidden' },
+  pkSplitPlaceholder: { alignItems: 'center', justifyContent: 'center', backgroundColor: colors.bgDeepest },
+  pkOverlayWrap: { paddingHorizontal: spacing.sm, marginTop: spacing.xs },
   preLiveTopBar: {
     position: 'absolute',
     top: 0,
@@ -795,6 +864,16 @@ const styles = StyleSheet.create({
   },
   pkBadgeText: { color: '#FFF', fontSize: 10, fontWeight: '700' },
   percentText: { color: '#00E676', fontSize: 12, fontWeight: '700' },
+  ruleBadge: {
+    flexDirection: 'row', alignItems: 'center', gap: 4,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    paddingHorizontal: 8, paddingVertical: 4, borderRadius: 10,
+    alignSelf: 'flex-start',
+  },
+  ruleText: { color: '#FFF', fontSize: 10, fontWeight: '700' },
+  luckyRankBadge: { paddingHorizontal: 10, paddingVertical: 6, borderRadius: 10 },
+  luckyRankTitle: { color: '#5A3800', fontSize: 10, fontWeight: '900' },
+  luckyRankSub: { color: '#5A3800', fontSize: 9, fontWeight: '700' },
   teamRow: {
     position: 'absolute', top: 110, left: spacing.sm, right: spacing.sm,
     flexDirection: 'row', gap: 8,

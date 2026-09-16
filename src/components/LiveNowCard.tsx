@@ -1,17 +1,20 @@
 import React, { useEffect, useState } from 'react';
-import { StyleSheet, Text, View } from 'react-native';
+import { Image, StyleSheet, Text, View } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
+import { useQuery } from '@tanstack/react-query';
 import type { LiveNowSession } from '../api/types';
+import { fetchActivePkForHost } from '../api/pk';
 import { countryCodeToFlag } from '../utils/country';
 import { PressableScale } from './PressableScale';
 import { LiveBadge } from './LiveBadge';
 import { colors, radii, spacing } from '../theme';
 
-// Home's primary card, replacing ExploreCard's generic-feed art card for
-// the "who's live right now" grid. Same deterministic-gradient-by-id
-// trick (no cover image field on most sessions yet) plus the one real
-// number this data actually has: elapsed time since startedAt. No
-// viewer count — see LiveNowSession's comment for why that'd be fake.
+// Home's primary card. coverUrl exists on LiveNowSession but nothing in
+// this backend ever sets it yet (checked before wiring this in) — shown
+// when present, falling back to the same deterministic gradient
+// otherwise, so this is forward-compatible with a future cover-upload
+// feature rather than dead code. No viewer count — see
+// LiveNowSession's comment for why that'd be fake.
 const CARD_GRADIENTS: readonly (readonly [string, string])[] = [
   [colors.primary, colors.pink],
   [colors.pink, colors.goldDeep],
@@ -42,9 +45,48 @@ export function LiveNowCard({ session, onPress }: { session: LiveNowSession; onP
   const gradient = gradientForId(session.id);
   const elapsed = useElapsed(session.startedAt);
 
+  // Checked once per card, not polled — a feed screen can show dozens
+  // of these at once, and refetching each one every few seconds would
+  // mean dozens of simultaneous requests just to render a list. Real
+  // data, just refreshed on the same cadence as the rest of the feed
+  // (whatever triggers this component to remount/refetch) rather than
+  // its own aggressive interval.
+  const pkQuery = useQuery({
+    queryKey: ['pk', 'active-for-host', session.hostId],
+    queryFn: () => fetchActivePkForHost(session.hostId),
+    staleTime: 15_000,
+  });
+  const activePk = pkQuery.data;
+
   return (
     <PressableScale style={styles.card} scaleTo={0.97} onPress={onPress}>
-      <LinearGradient colors={gradient} style={StyleSheet.absoluteFill} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} />
+      {activePk ? (
+        <View style={styles.pkSplitRow}>
+          <View style={styles.pkSplitHalf}>
+            {session.coverUrl ? (
+              <Image source={{ uri: session.coverUrl }} style={StyleSheet.absoluteFill} />
+            ) : (
+              <LinearGradient colors={gradient} style={StyleSheet.absoluteFill} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} />
+            )}
+          </View>
+          <View style={styles.pkSplitHalf}>
+            <LinearGradient
+              colors={gradientForId(activePk.opponentId)}
+              style={StyleSheet.absoluteFill}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+            />
+          </View>
+          <View style={styles.vsBadge}>
+            <Text style={styles.vsBadgeText}>VS</Text>
+          </View>
+        </View>
+      ) : session.coverUrl ? (
+        <Image source={{ uri: session.coverUrl }} style={StyleSheet.absoluteFill} />
+      ) : (
+        <LinearGradient colors={gradient} style={StyleSheet.absoluteFill} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} />
+      )}
+
       <View style={styles.topRow}>
         <LiveBadge size="sm" />
         <View style={styles.elapsedPill}>
@@ -83,6 +125,22 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.borderLight,
   },
+  pkSplitRow: { ...StyleSheet.absoluteFillObject, flexDirection: 'row' },
+  pkSplitHalf: { flex: 1, overflow: 'hidden' },
+  vsBadge: {
+    position: 'absolute',
+    left: '50%',
+    top: '50%',
+    marginLeft: -16,
+    marginTop: -10,
+    backgroundColor: colors.danger,
+    borderWidth: 1,
+    borderColor: '#FFF',
+    borderRadius: radii.pill,
+    paddingHorizontal: spacing.xs,
+    paddingVertical: 2,
+  },
+  vsBadgeText: { color: '#FFF', fontSize: 10, fontWeight: '900' },
   topRow: {
     position: 'absolute',
     top: spacing.sm,

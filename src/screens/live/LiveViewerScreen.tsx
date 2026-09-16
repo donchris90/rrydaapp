@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { View, Text, StyleSheet, Pressable, ActivityIndicator } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -8,12 +8,14 @@ import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useQuery } from '@tanstack/react-query';
 import { joinLiveSession } from '../../api/live';
+import { fetchActivePkForHost } from '../../api/pk';
 import { GradientBackground } from '../../components/GradientBackground';
 import { AgoraVideoView } from '../../components/AgoraVideoView';
 import { LiveChatFeed } from '../../components/LiveChatFeed';
 import { LiveHeaderBar } from '../../components/LiveHeaderBar';
 import { GiftTicker } from '../../components/GiftTicker';
 import { FloatingHeartsOverlay } from '../../components/FloatingHeartsOverlay';
+import { PkBattleOverlay } from '../../components/PkBattleOverlay';
 import { LiveToolsSheet } from '../../components/LiveToolsSheet';
 import { GiftSheet } from '../../components/GiftSheet';
 import { useAgoraEngine } from '../../live/useAgoraEngine';
@@ -43,7 +45,14 @@ export function LiveViewerScreen() {
     retry: false,
   });
 
-  const { remoteUid, error: agoraError } = useAgoraEngine({
+  const {
+    remoteUid,
+    error: agoraError,
+    secondaryRemoteUid,
+    secondaryConnection,
+    joinSecondaryChannel,
+    leaveSecondaryChannel,
+  } = useAgoraEngine({
     channelId: joinQuery.data?.session.providerChannel ?? '',
     token: joinQuery.data?.token ?? '',
     userAccount: user?.id ?? '',
@@ -51,6 +60,40 @@ export function LiveViewerScreen() {
   });
 
   const { messages, giftEvents, sendMessage } = useLiveChat('LIVE', params.sessionId);
+
+  // Real PK battle detection — polls the actual missing-link endpoint
+  // (pk.service.ts's findActiveForHost) rather than assuming a battle is
+  // happening. hostId comes from the join response, so this only starts
+  // once that's loaded.
+  const hostId = joinQuery.data?.session.hostId;
+  const pkQuery = useQuery({
+    queryKey: ['pk', 'active-for-host', hostId],
+    queryFn: () => fetchActivePkForHost(hostId!),
+    enabled: !!hostId,
+    refetchInterval: 3000,
+  });
+  const activePk = pkQuery.data;
+
+  // Joins the opponent's channel the moment their session becomes known,
+  // leaves it the moment it isn't (battle ended, or the opponent isn't
+  // live). A real token, fetched from the same joinLiveSession() every
+  // other viewer join already uses — not a second, separate
+  // token-issuing path built just for PK.
+  const opponentSessionId = activePk?.opponentSession?.id;
+  useEffect(() => {
+    if (!opponentSessionId) {
+      leaveSecondaryChannel();
+      return;
+    }
+    let cancelled = false;
+    joinLiveSession(opponentSessionId).then((result) => {
+      if (!cancelled) joinSecondaryChannel(result.session.providerChannel, result.token);
+    });
+    return () => {
+      cancelled = true;
+      leaveSecondaryChannel();
+    };
+  }, [opponentSessionId]);
 
   if (joinQuery.isLoading) {
     return (
@@ -77,7 +120,26 @@ export function LiveViewerScreen() {
   return (
     <View style={{ flex: 1, paddingTop: insets.top }}>
       <FloatingHeartsOverlay>
-        {remoteUid != null ? (
+        {activePk ? (
+          <View style={styles.splitVideoRow}>
+            <View style={styles.splitVideoHalf}>
+              {remoteUid != null ? (
+                <AgoraVideoView uid={remoteUid} style={StyleSheet.absoluteFill} />
+              ) : (
+                <View style={[StyleSheet.absoluteFill, styles.splitPlaceholder]} />
+              )}
+            </View>
+            <View style={styles.splitVideoHalf}>
+              {secondaryRemoteUid != null && secondaryConnection ? (
+                <AgoraVideoView uid={secondaryRemoteUid} connection={secondaryConnection} style={StyleSheet.absoluteFill} />
+              ) : (
+                <View style={[StyleSheet.absoluteFill, styles.splitPlaceholder]}>
+                  <Ionicons name="hourglass-outline" size={24} color={colors.textMuted} />
+                </View>
+              )}
+            </View>
+          </View>
+        ) : remoteUid != null ? (
           <AgoraVideoView uid={remoteUid} style={StyleSheet.absoluteFill} />
         ) : (
           <GradientBackground style={StyleSheet.absoluteFill}>
@@ -105,6 +167,13 @@ export function LiveViewerScreen() {
           onClose={() => navigation.goBack()}
         />
         <GiftTicker events={giftEvents} />
+        {activePk && (
+          <PkBattleOverlay
+            battle={activePk.battle}
+            hostName={session.title}
+            opponentName={activePk.opponentSession?.title ?? 'Opponent'}
+          />
+        )}
       </View>
 
       {/* Bottom action bar */}
@@ -198,6 +267,9 @@ const styles = StyleSheet.create({
   },
   videoPlaceholderText: { ...type.bodyStrong, color: colors.textSecondary },
   videoPlaceholderSubtext: { ...type.caption, color: colors.textMuted },
+  splitVideoRow: { flex: 1, flexDirection: 'row' },
+  splitVideoHalf: { flex: 1, overflow: 'hidden' },
+  splitPlaceholder: { alignItems: 'center', justifyContent: 'center', backgroundColor: colors.bgDeepest },
   header: {
     position: 'absolute',
     top: 0,

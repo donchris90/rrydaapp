@@ -8,6 +8,7 @@ import {
   FaceShapeArea,
   type IRtcEngine,
   type IRtcEngineEventHandler,
+  type RtcConnection,
 } from 'react-native-agora';
 import { AGORA_APP_ID } from '../config';
 
@@ -102,6 +103,18 @@ interface UseAgoraEngineResult {
   setBackground: (next: Partial<BackgroundState>) => void;
   faceShape: FaceShapeState;
   setFaceShape: (next: Partial<FaceShapeState>) => void;
+
+  // PK battles — joining a second, independent channel (the opponent's)
+  // alongside your own via Agora's real joinChannelEx/leaveChannelEx API
+  // (the SDK's own documented mechanism for cross-channel co-hosting;
+  // verified in the actual type definitions before building this, not
+  // assumed). secondaryRemoteUid/secondaryConnection are null whenever
+  // no secondary channel is joined — most screens using this hook will
+  // simply never call joinSecondaryChannel and can ignore these.
+  secondaryRemoteUid: number | null;
+  secondaryConnection: RtcConnection | null;
+  joinSecondaryChannel: (channelId: string, token: string) => void;
+  leaveSecondaryChannel: () => void;
 }
 
 export function useAgoraEngine({
@@ -121,6 +134,12 @@ export function useAgoraEngine({
   const [beauty, setBeautyState] = useState<BeautyState>(DEFAULT_BEAUTY);
   const [background, setBackgroundState] = useState<BackgroundState>(DEFAULT_BACKGROUND);
   const [faceShape, setFaceShapeState] = useState<FaceShapeState>(DEFAULT_FACE_SHAPE);
+  const [secondaryRemoteUid, setSecondaryRemoteUid] = useState<number | null>(null);
+  const [secondaryConnection, setSecondaryConnection] = useState<RtcConnection | null>(null);
+  // Ref, not state — read synchronously inside the event handler to tell
+  // a primary-channel callback apart from a secondary-channel one. State
+  // would be stale inside a handler registered once at engine creation.
+  const secondaryChannelIdRef = useRef<string | null>(null);
 
   // Beauty + virtual background only make sense on the publishing side.
   const shouldApplyVisualEffects = role === 'host';
@@ -167,9 +186,19 @@ export function useAgoraEngine({
 
         const eventHandler: IRtcEngineEventHandler = {
           onJoinChannelSuccess: () => setIsJoined(true),
-          onUserJoined: (_connection, uid) => setRemoteUid(uid),
-          onUserOffline: (_connection, uid) => {
-            setRemoteUid((current) => (current === uid ? null : current));
+          onUserJoined: (connection, uid) => {
+            if (secondaryChannelIdRef.current && connection.channelId === secondaryChannelIdRef.current) {
+              setSecondaryRemoteUid(uid);
+            } else {
+              setRemoteUid(uid);
+            }
+          },
+          onUserOffline: (connection, uid) => {
+            if (secondaryChannelIdRef.current && connection.channelId === secondaryChannelIdRef.current) {
+              setSecondaryRemoteUid((current) => (current === uid ? null : current));
+            } else {
+              setRemoteUid((current) => (current === uid ? null : current));
+            }
           },
           onError: (err, msg) => setError(`Agora error ${err}: ${msg}`),
           // These callbacks are deliberately diagnostic: a blank local
@@ -259,6 +288,12 @@ export function useAgoraEngine({
       setEngineReady(false);
       setIsJoined(false);
       setRemoteUid(null);
+      // leaveChannel() above already leaves any joinChannelEx connection
+      // too (per the SDK's own docs), so only the React-side state needs
+      // resetting here, not a second native leaveChannelEx call.
+      secondaryChannelIdRef.current = null;
+      setSecondaryConnection(null);
+      setSecondaryRemoteUid(null);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [userAccount, role]);
@@ -404,6 +439,39 @@ export function useAgoraEngine({
     engineRef.current?.switchCamera();
   };
 
+  // PK battles — join the opponent's channel as a silent audience member
+  // (no video/audio published there) while staying joined to your own
+  // primary channel via the existing joinChannel call. localUid: 0 lets
+  // the SDK auto-assign, since nothing in this secondary channel needs
+  // to reference the local viewer's own uid — only the opponent's
+  // remote video matters here.
+  const joinSecondaryChannel = (secondaryChannelId: string, secondaryToken: string) => {
+    const engine = engineRef.current;
+    if (!engine) return;
+    const connection: RtcConnection = { channelId: secondaryChannelId, localUid: 0 };
+    secondaryChannelIdRef.current = secondaryChannelId;
+    setSecondaryConnection(connection);
+    engine.joinChannelEx(secondaryToken, connection, {
+      clientRoleType: ClientRoleType.ClientRoleAudience,
+      autoSubscribeAudio: true,
+      autoSubscribeVideo: true,
+      publishCameraTrack: false,
+      publishMicrophoneTrack: false,
+    });
+  };
+
+  const leaveSecondaryChannel = () => {
+    const engine = engineRef.current;
+    const connection = secondaryConnection;
+    if (!engine || !connection) return;
+    try {
+      engine.leaveChannelEx(connection);
+    } catch {}
+    secondaryChannelIdRef.current = null;
+    setSecondaryConnection(null);
+    setSecondaryRemoteUid(null);
+  };
+
   const toggleNoiseSuppression = () => {
     setIsNoiseSuppressionOn((current) => {
       const next = !current;
@@ -439,5 +507,9 @@ export function useAgoraEngine({
     setBackground,
     faceShape,
     setFaceShape,
+    secondaryRemoteUid,
+    secondaryConnection,
+    joinSecondaryChannel,
+    leaveSecondaryChannel,
   };
 }

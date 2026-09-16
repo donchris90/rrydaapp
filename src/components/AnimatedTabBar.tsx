@@ -1,9 +1,12 @@
 import React, { useEffect, useRef } from 'react';
-import { Animated, Pressable, StyleSheet, View } from 'react-native';
+import { Animated, Pressable, StyleSheet, Text, View } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import type { BottomTabBarProps } from '@react-navigation/bottom-tabs';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useQuery } from '@tanstack/react-query';
+import { fetchNotifications } from '../api/notifications';
+import { fetchConversations } from '../api/messages';
 import { colors, gradients, glow, radii } from '../theme';
 
 const ICONS: Record<string, { filled: keyof typeof Ionicons.glyphMap; outline: keyof typeof Ionicons.glyphMap }> = {
@@ -25,6 +28,26 @@ const ICONS: Record<string, { filled: keyof typeof Ionicons.glyphMap; outline: k
 // a live session instead).
 export function AnimatedTabBar({ state, descriptors, navigation }: BottomTabBarProps) {
   const insets = useSafeAreaInsets();
+
+  // Real unread count, the same fetchNotifications endpoint InboxScreen
+  // uses — not a separate count endpoint, since list().length is
+  // already exactly that number and avoids maintaining two sources of
+  // truth for the same real data.
+  const notificationsQuery = useQuery({
+    queryKey: ['notifications'],
+    queryFn: () => fetchNotifications(true),
+    refetchInterval: 20000,
+  });
+  // Same real conversations query InboxScreen uses — the tab badge
+  // counts unread messages too now, not just notifications, since both
+  // live under the same "Inbox" tab.
+  const conversationsQuery = useQuery({
+    queryKey: ['messages', 'conversations'],
+    queryFn: fetchConversations,
+    refetchInterval: 20000,
+  });
+  const unreadCount =
+    (notificationsQuery.data?.length ?? 0) + (conversationsQuery.data?.reduce((sum, c) => sum + c.unreadCount, 0) ?? 0);
 
   return (
     <View style={[styles.bar, { paddingBottom: Math.max(insets.bottom, 10) }]}>
@@ -51,6 +74,7 @@ export function AnimatedTabBar({ state, descriptors, navigation }: BottomTabBarP
             iconName={icon ? (isFocused ? icon.filled : icon.outline) : 'ellipse'}
             focused={isFocused}
             onPress={onPress}
+            badgeCount={route.name === 'Inbox' ? unreadCount : 0}
           />
         );
       })}
@@ -79,11 +103,13 @@ function TabItem({
   iconName,
   focused,
   onPress,
+  badgeCount = 0,
 }: {
   label: string;
   iconName: keyof typeof Ionicons.glyphMap;
   focused: boolean;
   onPress: () => void;
+  badgeCount?: number;
 }) {
   const progress = useRef(new Animated.Value(focused ? 1 : 0)).current;
 
@@ -104,6 +130,11 @@ function TabItem({
         ) : (
           <View style={styles.pillIdle}>
             <Ionicons name={iconName} size={20} color={colors.textMuted} />
+          </View>
+        )}
+        {badgeCount > 0 && (
+          <View style={styles.badge}>
+            <Text style={styles.badgeText}>{badgeCount > 9 ? '9+' : badgeCount}</Text>
           </View>
         )}
       </Animated.View>
@@ -143,4 +174,19 @@ const styles = StyleSheet.create({
     borderWidth: 3,
     borderColor: colors.bgDeepest,
   },
+  badge: {
+    position: 'absolute',
+    top: -4,
+    right: -4,
+    minWidth: 16,
+    height: 16,
+    borderRadius: 8,
+    paddingHorizontal: 3,
+    backgroundColor: colors.danger,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1.5,
+    borderColor: colors.bgDeepest,
+  },
+  badgeText: { color: '#FFF', fontSize: 9, fontWeight: '800' },
 });
