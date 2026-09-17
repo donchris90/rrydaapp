@@ -1,6 +1,6 @@
 {
-  "name": "Rryda App",
-  "description": "A live streaming, PK battles, creators, and social interactive mobile platform.",
+  "name": "BC.Game Style Crash",
+  "description": "A high-intensity, BC.Game-inspired real-time Crash game with live multiplier curve, audio synth, manual and automated wagering, live multiplayer lobby, and provably fair verification.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
