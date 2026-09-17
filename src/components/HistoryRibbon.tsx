@@ -19,11 +19,11 @@ export function HistoryRibbon({ history, onSelectRound, onOpenTrends }: HistoryR
     if (multiplier >= 2) {
       return 'bg-[#00E701]/15 border-[#00E701]/60 text-[#4ADE80] hover:bg-[#00E701]/25';
     }
-    return 'bg-[#24272C] border-white/10 text-white/70 hover:bg-white/10';
+    return 'bg-[#2E394E] border-white/10 text-white/80 hover:bg-[#3B4862]';
   };
 
   return (
-    <div className="w-full flex items-center justify-between gap-2 p-2 bg-[#1E2024] rounded-xl border border-white/10">
+    <div className="w-full flex items-center justify-between gap-2 p-2 bg-[#242D3D] rounded-xl border border-white/10 shadow-md">
       {/* Scrollable Ribbon */}
       <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar scroll-smooth flex-1 py-0.5">
         {history.slice(0, 18).map((item) => (
@@ -46,7 +46,7 @@ export function HistoryRibbon({ history, onSelectRound, onOpenTrends }: HistoryR
         <button
           id="trends-button"
           onClick={onOpenTrends}
-          className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-[#282B30] hover:bg-[#32363D] border border-white/10 text-xs font-semibold text-white/80 transition-colors cursor-pointer"
+          className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-[#2E394E] hover:bg-[#3B4862] border border-white/10 text-xs font-semibold text-white/90 transition-colors cursor-pointer"
           title="Game Trends & Multiplier Analytics"
         >
           <BarChart3 className="w-3.5 h-3.5 text-[#00E701]" />

@@ -135,8 +135,8 @@ export function CrashCanvas({
         shakeRef.current = Math.max(0, shakeRef.current - dt * 0.04);
       }
 
-      // 1. Background Fill - Dark slate BC.Game canvas
-      ctx.fillStyle = '#17191E';
+      // 1. Background Fill - Lighter modern gaming slate canvas
+      ctx.fillStyle = '#202838';
       ctx.fillRect(0, 0, displayWidth, displayHeight);
 
       // Subtle radial glow from center
@@ -148,8 +148,8 @@ export function CrashCanvas({
         displayHeight * 0.5,
         displayWidth * 0.7
       );
-      bgGrad.addColorStop(0, 'rgba(34, 40, 52, 0.45)');
-      bgGrad.addColorStop(1, 'rgba(15, 17, 21, 0.85)');
+      bgGrad.addColorStop(0, 'rgba(48, 62, 86, 0.55)');
+      bgGrad.addColorStop(1, 'rgba(26, 33, 46, 0.95)');
       ctx.fillStyle = bgGrad;
       ctx.fillRect(0, 0, displayWidth, displayHeight);
 
@@ -468,7 +468,7 @@ export function CrashCanvas({
   };
 
   return (
-    <div className="relative w-full h-[340px] sm:h-[400px] md:h-[460px] rounded-2xl overflow-hidden bg-[#17191E] border border-white/10 shadow-2xl flex flex-col justify-center items-center select-none">
+    <div className="relative w-full h-[340px] sm:h-[400px] md:h-[460px] rounded-2xl overflow-hidden bg-[#202838] border border-white/10 shadow-2xl flex flex-col justify-center items-center select-none">
       {/* HTML5 2D Interactive High-FPS Canvas */}
       <canvas ref={canvasRef} className="absolute inset-0 w-full h-full block" />
 

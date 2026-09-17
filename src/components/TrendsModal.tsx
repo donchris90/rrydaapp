@@ -33,7 +33,7 @@ export function TrendsModal({ isOpen, history, onClose }: TrendsModalProps) {
       }}
       className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm animate-in fade-in duration-200"
     >
-      <div className="relative w-full max-w-lg bg-[#1E2024] rounded-2xl border border-white/10 p-6 shadow-2xl flex flex-col gap-4 text-white">
+      <div className="relative w-full max-w-lg bg-[#242D3D] rounded-2xl border border-white/10 p-6 shadow-2xl flex flex-col gap-4 text-white">
         <div className="flex items-center justify-between border-b border-white/10 pb-4">
           <div className="flex items-center gap-2.5">
             <div className="w-9 h-9 rounded-xl bg-[#00E701]/15 border border-[#00E701]/30 flex items-center justify-center text-[#00E701]">
@@ -41,12 +41,12 @@ export function TrendsModal({ isOpen, history, onClose }: TrendsModalProps) {
             </div>
             <div>
               <h2 className="text-base font-bold text-white">Crash Trend Statistics</h2>
-              <p className="text-xs text-white/50">Analysis over the last {total} rounds</p>
+              <p className="text-xs text-white/60">Analysis over the last {total} rounds</p>
             </div>
           </div>
           <button
             onClick={onClose}
-            className="w-8 h-8 rounded-lg bg-white/5 hover:bg-white/10 flex items-center justify-center text-white/60 hover:text-white transition-colors cursor-pointer"
+            className="w-8 h-8 rounded-lg bg-white/5 hover:bg-white/10 flex items-center justify-center text-white/70 hover:text-white transition-colors cursor-pointer"
           >
             <X className="w-4 h-4" />
           </button>
@@ -54,15 +54,15 @@ export function TrendsModal({ isOpen, history, onClose }: TrendsModalProps) {
 
         {/* Quick Highlights */}
         <div className="grid grid-cols-2 gap-3">
-          <div className="p-3 bg-[#14161A] rounded-xl border border-white/5 flex flex-col gap-1">
-            <span className="text-[11px] text-white/50 uppercase font-bold flex items-center gap-1">
+          <div className="p-3 bg-[#192230] rounded-xl border border-white/10 flex flex-col gap-1 shadow-sm">
+            <span className="text-[11px] text-white/60 uppercase font-bold flex items-center gap-1">
               <Award className="w-3.5 h-3.5 text-[#FFB800]" /> Highest Multiplier
             </span>
             <span className="text-xl font-mono font-black text-[#FFB800]">{maxMultiplier.toFixed(2)}×</span>
           </div>
 
-          <div className="p-3 bg-[#14161A] rounded-xl border border-white/5 flex flex-col gap-1">
-            <span className="text-[11px] text-white/50 uppercase font-bold flex items-center gap-1">
+          <div className="p-3 bg-[#192230] rounded-xl border border-white/10 flex flex-col gap-1 shadow-sm">
+            <span className="text-[11px] text-white/60 uppercase font-bold flex items-center gap-1">
               <Zap className="w-3.5 h-3.5 text-[#00E701]" /> Median Multiplier
             </span>
             <span className="text-xl font-mono font-black text-[#00E701]">{medianMultiplier.toFixed(2)}×</span>
@@ -120,7 +120,7 @@ export function TrendsModal({ isOpen, history, onClose }: TrendsModalProps) {
 
         <button
           onClick={onClose}
-          className="w-full py-2.5 rounded-xl bg-[#282B31] hover:bg-[#343840] font-bold text-sm text-white transition-colors cursor-pointer"
+          className="w-full py-2.5 rounded-xl bg-[#2E394E] hover:bg-[#3B4862] font-bold text-sm text-white transition-colors cursor-pointer"
         >
           Close
         </button>

@@ -20,7 +20,7 @@ export function LiveBetsTable({ status, currentMultiplier, players, myBets }: Li
     .reduce((acc, p) => acc + (p.cashedOutProfit || 0), 0);
 
   return (
-    <div className="w-full bg-[#1E2024] rounded-2xl border border-white/10 p-4 flex flex-col gap-3 shadow-xl">
+    <div className="w-full bg-[#242D3D] rounded-2xl border border-white/10 p-4 flex flex-col gap-3 shadow-xl">
       {/* Table Tabs */}
       <div className="flex items-center justify-between border-b border-white/10 pb-3">
         <div className="flex items-center gap-2">
@@ -29,8 +29,8 @@ export function LiveBetsTable({ status, currentMultiplier, players, myBets }: Li
             onClick={() => setTab('ALL')}
             className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
               tab === 'ALL'
-                ? 'bg-[#282B31] text-[#00E701] border border-white/10'
-                : 'text-white/60 hover:text-white'
+                ? 'bg-[#333F56] text-[#00E701] border border-white/10'
+                : 'text-white/70 hover:text-white'
             }`}
           >
             <Users className="w-3.5 h-3.5" />
@@ -42,8 +42,8 @@ export function LiveBetsTable({ status, currentMultiplier, players, myBets }: Li
             onClick={() => setTab('MINE')}
             className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
               tab === 'MINE'
-                ? 'bg-[#282B31] text-[#00E701] border border-white/10'
-                : 'text-white/60 hover:text-white'
+                ? 'bg-[#333F56] text-[#00E701] border border-white/10'
+                : 'text-white/70 hover:text-white'
             }`}
           >
             <User className="w-3.5 h-3.5" />

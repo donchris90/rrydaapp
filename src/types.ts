@@ -48,3 +48,65 @@ export interface TrendStats {
   overHundred: number;
   highestMultiplier: number;
 }
+
+export type DiceRoundStatus = 'OPEN' | 'LOCKED' | 'RESOLVING' | 'SETTLED';
+
+export interface DiceRoundHistory {
+  id: string;
+  roundNumber: number;
+  dice: [number, number, number];
+  sum: number;
+  size: 'S' | 'B';
+  parity: 'E' | 'O';
+  hash: string;
+  serverSeed: string;
+  clientSeed: string;
+  nonce: number;
+  timestamp: number;
+  totalPool: number;
+  prize?: number;
+}
+
+export interface DicePlayerBet {
+  id: string;
+  username: string;
+  avatar: string;
+  selection: number[];
+  category?: 'S' | 'B' | 'E' | 'O' | 'CUSTOM';
+  stakeAmount: number;
+  won?: boolean;
+  rewardAmount?: number;
+  isUser?: boolean;
+}
+
+export type ActiveGame = 'CRASH' | 'SUM_DICE';
+
+export type RoundResultType = 'WIN' | 'LOSS' | 'NOT_PLAYED';
+
+export interface UserRoundRecord {
+  id: string;
+  roundNumber: number;
+  game: 'CRASH' | 'SUM_DICE';
+  resultType: RoundResultType;
+  stake: number;
+  multiplier?: number;
+  outcomeDisplay: string;
+  profit: number;
+  timestamp: number;
+}
+
+export interface UserDashboardStats {
+  totalRounds: number;
+  wins: number;
+  losses: number;
+  notPlayed: number;
+  winRate: number;
+  totalWon: number;
+  totalLost: number;
+  netProfit: number;
+  bestMultiplier: number;
+  currentStreak: {
+    type: 'WIN' | 'LOSS' | 'NONE';
+    count: number;
+  };
+}

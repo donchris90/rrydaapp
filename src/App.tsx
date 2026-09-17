@@ -5,9 +5,11 @@ import { HistoryRibbon } from './components/HistoryRibbon';
 import { CrashCanvas } from './components/CrashCanvas';
 import { BettingControls } from './components/BettingControls';
 import { LiveBetsTable } from './components/LiveBetsTable';
+import { RoundLeaderboard } from './components/RoundLeaderboard';
 import { FairnessModal } from './components/FairnessModal';
 import { TrendsModal } from './components/TrendsModal';
 import { HelpModal } from './components/HelpModal';
+import { SumDiceGame } from './components/dice/SumDiceGame';
 import { audio } from './utils/audio';
 import {
   calculateCrashPoint,
@@ -20,6 +22,7 @@ import type {
   RoundHistoryItem,
   PlayerBet,
   AutoConfig,
+  ActiveGame,
 } from './types';
 
 // Generate 24 realistic initial history items
@@ -44,7 +47,10 @@ function createInitialHistory(): RoundHistoryItem[] {
 }
 
 export default function App() {
-  // Game State
+  // Game Selector ('SUM_DICE' or 'CRASH')
+  const [activeGame, setActiveGame] = useState<ActiveGame>('SUM_DICE');
+
+  // Game State (Crash)
   const [status, setStatus] = useState<RoundStatus>('COUNTDOWN');
   const [roundNumber, setRoundNumber] = useState<number>(4831);
   const [currentMultiplier, setCurrentMultiplier] = useState<number>(1.0);
@@ -439,12 +445,14 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen w-full bg-[#0F1115] text-white flex flex-col font-sans selection:bg-[#00E701] selection:text-black">
+    <div className="min-h-screen w-full bg-[#181F2A] text-white flex flex-col font-sans selection:bg-[#00E701] selection:text-black">
       {/* BC.Game Top Header */}
       <CrashHeader
-        roundNumber={roundNumber}
+        roundNumber={activeGame === 'CRASH' ? roundNumber : undefined}
         walletBalance={walletBalance}
         isMuted={isMuted}
+        activeGame={activeGame}
+        onSelectGame={setActiveGame}
         onToggleMute={handleToggleMute}
         onResetBalance={handleResetBalance}
         onOpenHelp={() => setIsHelpOpen(true)}
@@ -466,81 +474,98 @@ export default function App() {
 
       {/* Main Container */}
       <main className="flex-1 w-full max-w-7xl mx-auto p-2 sm:p-4 md:p-6 flex flex-col gap-4">
-        {/* Horizontal Multipliers Ribbon */}
-        <HistoryRibbon
-          history={history}
-          onSelectRound={(item) => setSelectedFairnessRound(item)}
-          onOpenTrends={() => setIsTrendsOpen(true)}
-        />
-
-        {/* Primary Stage: Split Layout on Desktop / Stacked on Mobile */}
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-start">
-          {/* Left Column: Betting Controls (LG: 5 cols) */}
-          <div className="lg:col-span-5 flex flex-col gap-4 order-2 lg:order-1">
-            <BettingControls
-              status={status}
-              currentMultiplier={currentMultiplier}
-              walletBalance={walletBalance}
-              userBet={userBet}
-              queuedBet={queuedBet}
-              onPlaceBet={handlePlaceBet}
-              onCancelQueuedBet={handleCancelQueuedBet}
-              onCashOut={handleCashOut}
-              autoConfig={autoConfig}
-              onUpdateAutoConfig={(cfg) => setAutoConfig((prev) => ({ ...prev, ...cfg }))}
-              onToggleAutoRun={handleToggleAutoRun}
+        {activeGame === 'SUM_DICE' ? (
+          <SumDiceGame
+            balance={walletBalance}
+            onUpdateBalance={setWalletBalance}
+          />
+        ) : (
+          <>
+            {/* Horizontal Multipliers Ribbon */}
+            <HistoryRibbon
+              history={history}
+              onSelectRound={(item) => setSelectedFairnessRound(item)}
+              onOpenTrends={() => setIsTrendsOpen(true)}
             />
 
-            {/* Live Multiplayer Lobby Bets Table */}
-            <LiveBetsTable
-              status={status}
-              currentMultiplier={currentMultiplier}
-              players={players}
-              myBets={myBetsHistory}
-            />
-          </div>
+            {/* Primary Stage: Split Layout on Desktop / Stacked on Mobile */}
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-start">
+              {/* Left Column: Betting Controls (LG: 5 cols) */}
+              <div className="lg:col-span-5 flex flex-col gap-4 order-2 lg:order-1">
+                <BettingControls
+                  status={status}
+                  currentMultiplier={currentMultiplier}
+                  walletBalance={walletBalance}
+                  userBet={userBet}
+                  queuedBet={queuedBet}
+                  onPlaceBet={handlePlaceBet}
+                  onCancelQueuedBet={handleCancelQueuedBet}
+                  onCashOut={handleCashOut}
+                  autoConfig={autoConfig}
+                  onUpdateAutoConfig={(cfg) => setAutoConfig((prev) => ({ ...prev, ...cfg }))}
+                  onToggleAutoRun={handleToggleAutoRun}
+                />
 
-          {/* Right Column: HTML5 60FPS Flight Canvas (LG: 7 cols) */}
-          <div className="lg:col-span-7 flex flex-col gap-4 order-1 lg:order-2">
-            <CrashCanvas
-              status={status}
-              currentMultiplier={currentMultiplier}
-              crashPoint={crashPoint}
-              countdownSeconds={countdownSeconds}
-              flightDurationMs={flightDurationMs}
-            />
+                {/* Top 3 Profit Round Leaderboard */}
+                <RoundLeaderboard
+                  players={players}
+                  status={status}
+                  currentMultiplier={currentMultiplier}
+                  roundNumber={roundNumber}
+                />
 
-            {/* Quick Live Game Stats Bar */}
-            <div className="grid grid-cols-3 gap-2 sm:gap-3">
-              <div className="p-3 rounded-xl bg-[#1E2024] border border-white/5 flex flex-col items-center sm:items-start">
-                <span className="text-[10px] sm:text-xs uppercase font-bold text-white/40 tracking-wider">
-                  House Edge
-                </span>
-                <span className="text-sm sm:text-base font-mono font-black text-[#00E701]">
-                  1.00% (99% RTP)
-                </span>
+                {/* Live Multiplayer Lobby Bets Table */}
+                <LiveBetsTable
+                  status={status}
+                  currentMultiplier={currentMultiplier}
+                  players={players}
+                  myBets={myBetsHistory}
+                />
               </div>
 
-              <div className="p-3 rounded-xl bg-[#1E2024] border border-white/5 flex flex-col items-center sm:items-start">
-                <span className="text-[10px] sm:text-xs uppercase font-bold text-white/40 tracking-wider">
-                  Active Bettors
-                </span>
-                <span className="text-sm sm:text-base font-mono font-black text-white">
-                  {players.length} Players
-                </span>
-              </div>
+              {/* Right Column: HTML5 60FPS Flight Canvas (LG: 7 cols) */}
+              <div className="lg:col-span-7 flex flex-col gap-4 order-1 lg:order-2">
+                <CrashCanvas
+                  status={status}
+                  currentMultiplier={currentMultiplier}
+                  crashPoint={crashPoint}
+                  countdownSeconds={countdownSeconds}
+                  flightDurationMs={flightDurationMs}
+                />
 
-              <div className="p-3 rounded-xl bg-[#1E2024] border border-white/5 flex flex-col items-center sm:items-start">
-                <span className="text-[10px] sm:text-xs uppercase font-bold text-white/40 tracking-wider">
-                  Server Seed Hash
-                </span>
-                <span className="text-xs sm:text-sm font-mono text-white/70 truncate w-full">
-                  {currentSeedPair.hash.substring(0, 10)}...
-                </span>
+                {/* Quick Live Game Stats Bar */}
+                <div className="grid grid-cols-3 gap-2 sm:gap-3">
+                  <div className="p-3 rounded-xl bg-[#242D3D] border border-white/10 flex flex-col items-center sm:items-start shadow-sm">
+                    <span className="text-[10px] sm:text-xs uppercase font-bold text-white/50 tracking-wider">
+                      House Edge
+                    </span>
+                    <span className="text-sm sm:text-base font-mono font-black text-[#00E701]">
+                      1.00% (99% RTP)
+                    </span>
+                  </div>
+
+                  <div className="p-3 rounded-xl bg-[#242D3D] border border-white/10 flex flex-col items-center sm:items-start shadow-sm">
+                    <span className="text-[10px] sm:text-xs uppercase font-bold text-white/50 tracking-wider">
+                      Active Bettors
+                    </span>
+                    <span className="text-sm sm:text-base font-mono font-black text-white">
+                      {players.length} Players
+                    </span>
+                  </div>
+
+                  <div className="p-3 rounded-xl bg-[#242D3D] border border-white/10 flex flex-col items-center sm:items-start shadow-sm">
+                    <span className="text-[10px] sm:text-xs uppercase font-bold text-white/50 tracking-wider">
+                      Server Seed Hash
+                    </span>
+                    <span className="text-xs sm:text-sm font-mono text-white/80 truncate w-full">
+                      {currentSeedPair.hash.substring(0, 10)}...
+                    </span>
+                  </div>
+                </div>
               </div>
             </div>
-          </div>
-        </div>
+          </>
+        )}
       </main>
 
       {/* Modals */}

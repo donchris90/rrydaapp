@@ -1,4 +1,4 @@
-import App from '../../App';
+import App from './App';
 
 /**
  * CrashScreen component (BC.Game style web implementation)

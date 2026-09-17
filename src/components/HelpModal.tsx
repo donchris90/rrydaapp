@@ -16,7 +16,7 @@ export function HelpModal({ isOpen, onClose }: HelpModalProps) {
       }}
       className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm animate-in fade-in duration-200"
     >
-      <div className="relative w-full max-w-lg bg-[#1E2024] rounded-2xl border border-white/10 p-6 shadow-2xl flex flex-col gap-4 text-white max-h-[90vh] overflow-y-auto">
+      <div className="relative w-full max-w-lg bg-[#242D3D] rounded-2xl border border-white/10 p-6 shadow-2xl flex flex-col gap-4 text-white max-h-[90vh] overflow-y-auto">
         <div className="flex items-center justify-between border-b border-white/10 pb-4">
           <div className="flex items-center gap-2.5">
             <div className="w-9 h-9 rounded-xl bg-[#00E701]/15 border border-[#00E701]/30 flex items-center justify-center text-[#00E701]">
@@ -24,19 +24,19 @@ export function HelpModal({ isOpen, onClose }: HelpModalProps) {
             </div>
             <div>
               <h2 className="text-base font-bold text-white">How to Play Crash</h2>
-              <p className="text-xs text-white/50">Rules, mechanics & auto-cashout strategy</p>
+              <p className="text-xs text-white/60">Rules, mechanics & auto-cashout strategy</p>
             </div>
           </div>
           <button
             onClick={onClose}
-            className="w-8 h-8 rounded-lg bg-white/5 hover:bg-white/10 flex items-center justify-center text-white/60 hover:text-white transition-colors cursor-pointer"
+            className="w-8 h-8 rounded-lg bg-white/5 hover:bg-white/10 flex items-center justify-center text-white/70 hover:text-white transition-colors cursor-pointer"
           >
             <X className="w-4 h-4" />
           </button>
         </div>
 
         <div className="flex flex-col gap-4 text-xs text-white/80 leading-relaxed">
-          <div className="flex gap-3 p-3 bg-[#14161A] rounded-xl border border-white/5">
+          <div className="flex gap-3 p-3 bg-[#192230] rounded-xl border border-white/10 shadow-sm">
             <Coins className="w-5 h-5 text-[#FFB800] flex-shrink-0 mt-0.5" />
             <div>
               <span className="font-bold text-white block mb-0.5">1. Set Your Wager</span>
@@ -44,7 +44,7 @@ export function HelpModal({ isOpen, onClose }: HelpModalProps) {
             </div>
           </div>
 
-          <div className="flex gap-3 p-3 bg-[#14161A] rounded-xl border border-white/5">
+          <div className="flex gap-3 p-3 bg-[#192230] rounded-xl border border-white/10 shadow-sm">
             <Zap className="w-5 h-5 text-[#00E701] flex-shrink-0 mt-0.5" />
             <div>
               <span className="font-bold text-white block mb-0.5">2. Watch the Multiplier Climb</span>
@@ -52,7 +52,7 @@ export function HelpModal({ isOpen, onClose }: HelpModalProps) {
             </div>
           </div>
 
-          <div className="flex gap-3 p-3 bg-[#14161A] rounded-xl border border-white/5">
+          <div className="flex gap-3 p-3 bg-[#192230] rounded-xl border border-white/10 shadow-sm">
             <ShieldAlert className="w-5 h-5 text-[#FF4757] flex-shrink-0 mt-0.5" />
             <div>
               <span className="font-bold text-white block mb-0.5">3. Cash Out Before the Crash</span>

@@ -78,10 +78,10 @@ export function BettingControls({
     : 0;
 
   return (
-    <div className="w-full bg-[#1E2024] rounded-2xl border border-white/10 p-4 sm:p-5 flex flex-col gap-4 shadow-xl">
+    <div className="w-full bg-[#242D3D] rounded-2xl border border-white/10 p-4 sm:p-5 flex flex-col gap-4 shadow-xl">
       {/* Tab Switch: Manual vs Auto (BC.Game signature) */}
       <div className="flex items-center justify-between border-b border-white/10 pb-3">
-        <div className="flex items-center p-1 bg-[#14161A] rounded-xl border border-white/5">
+        <div className="flex items-center p-1 bg-[#192230] rounded-xl border border-white/5">
           <button
             id="tab-manual"
             onClick={() => {
@@ -90,8 +90,8 @@ export function BettingControls({
             }}
             className={`px-5 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer ${
               mode === 'MANUAL'
-                ? 'bg-[#282B31] text-[#00E701] shadow-md'
-                : 'text-white/60 hover:text-white'
+                ? 'bg-[#333F56] text-[#00E701] shadow-md'
+                : 'text-white/70 hover:text-white'
             }`}
           >
             Manual
@@ -104,8 +104,8 @@ export function BettingControls({
             }}
             className={`flex items-center gap-1.5 px-5 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer ${
               mode === 'AUTO'
-                ? 'bg-[#282B31] text-[#00E701] shadow-md'
-                : 'text-white/60 hover:text-white'
+                ? 'bg-[#333F56] text-[#00E701] shadow-md'
+                : 'text-white/70 hover:text-white'
             }`}
           >
             <Zap className="w-3.5 h-3.5" />
@@ -114,10 +114,10 @@ export function BettingControls({
         </div>
 
         {/* User Balance Chip */}
-        <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-[#14161A] border border-white/10">
+        <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-[#192230] border border-white/10">
           <Coins className="w-4 h-4 text-[#FFB800]" />
           <div className="flex flex-col items-end">
-            <span className="text-[10px] uppercase font-bold text-white/40 tracking-wider">Balance</span>
+            <span className="text-[10px] uppercase font-bold text-white/50 tracking-wider">Balance</span>
             <span className="text-sm font-mono font-bold text-white">
               {walletBalance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
             </span>
@@ -130,11 +130,11 @@ export function BettingControls({
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {/* Bet Amount Input */}
             <div className="flex flex-col gap-1.5">
-              <div className="flex items-center justify-between text-xs font-semibold text-white/70">
+              <div className="flex items-center justify-between text-xs font-semibold text-white/80">
                 <span>Amount</span>
-                <span className="text-white/40 text-[11px]">Min: 10.00</span>
+                <span className="text-white/50 text-[11px]">Min: 10.00</span>
               </div>
-              <div className="flex items-center rounded-xl bg-[#14161A] border border-white/10 p-1 focus-within:border-[#00E701] transition-colors">
+              <div className="flex items-center rounded-xl bg-[#192230] border border-white/10 p-1 focus-within:border-[#00E701] transition-colors">
                 <div className="px-2.5 flex items-center gap-1 text-[#FFB800] font-bold text-sm">
                   <Coins className="w-4 h-4" />
                 </div>
@@ -152,21 +152,21 @@ export function BettingControls({
                   <button
                     id="btn-half"
                     onClick={handleHalf}
-                    className="px-2 py-1 rounded-lg bg-[#24272C] hover:bg-[#2F343B] text-[11px] font-bold text-white/80 transition-colors cursor-pointer"
+                    className="px-2 py-1 rounded-lg bg-[#2E394E] hover:bg-[#3B4862] text-[11px] font-bold text-white/90 transition-colors cursor-pointer"
                   >
                     ½
                   </button>
                   <button
                     id="btn-double"
                     onClick={handleDouble}
-                    className="px-2 py-1 rounded-lg bg-[#24272C] hover:bg-[#2F343B] text-[11px] font-bold text-white/80 transition-colors cursor-pointer"
+                    className="px-2 py-1 rounded-lg bg-[#2E394E] hover:bg-[#3B4862] text-[11px] font-bold text-white/90 transition-colors cursor-pointer"
                   >
                     2×
                   </button>
                   <button
                     id="btn-max"
                     onClick={handleMax}
-                    className="px-2 py-1 rounded-lg bg-[#24272C] hover:bg-[#2F343B] text-[11px] font-bold text-white/80 transition-colors cursor-pointer"
+                    className="px-2 py-1 rounded-lg bg-[#2E394E] hover:bg-[#3B4862] text-[11px] font-bold text-white/90 transition-colors cursor-pointer"
                   >
                     Max
                   </button>
@@ -176,7 +176,7 @@ export function BettingControls({
 
             {/* Auto Cash Out Multiplier */}
             <div className="flex flex-col gap-1.5">
-              <div className="flex items-center justify-between text-xs font-semibold text-white/70">
+              <div className="flex items-center justify-between text-xs font-semibold text-white/80">
                 <label className="flex items-center gap-1.5 cursor-pointer select-none">
                   <input
                     type="checkbox"
@@ -186,10 +186,10 @@ export function BettingControls({
                   />
                   <span>Auto Cash Out</span>
                 </label>
-                <span className="text-white/40 text-[11px]">Multiplier</span>
+                <span className="text-white/50 text-[11px]">Multiplier</span>
               </div>
               <div
-                className={`flex items-center rounded-xl bg-[#14161A] border p-1 transition-colors ${
+                className={`flex items-center rounded-xl bg-[#192230] border p-1 transition-colors ${
                   autoCashOutEnabled ? 'border-white/10 focus-within:border-[#00E701]' : 'border-white/5 opacity-50'
                 }`}
               >
@@ -212,7 +212,7 @@ export function BettingControls({
                       className={`px-2 py-1 rounded-lg text-[11px] font-mono font-bold transition-colors cursor-pointer ${
                         autoCashOutMultiplier === m && autoCashOutEnabled
                           ? 'bg-[#00E701]/20 text-[#00E701] border border-[#00E701]/50'
-                          : 'bg-[#24272C] hover:bg-[#2F343B] text-white/70'
+                          : 'bg-[#2E394E] hover:bg-[#3B4862] text-white/80'
                       }`}
                     >
                       {m}×
@@ -302,43 +302,43 @@ export function BettingControls({
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             {/* Base Bet */}
             <div className="flex flex-col gap-1">
-              <span className="text-xs font-semibold text-white/70">Base Bet</span>
+              <span className="text-xs font-semibold text-white/80">Base Bet</span>
               <input
                 type="number"
                 min="10"
                 value={autoConfig.baseBet}
                 onChange={(e) => onUpdateAutoConfig({ baseBet: Math.max(10, Number(e.target.value)) })}
-                className="w-full bg-[#14161A] border border-white/10 rounded-xl px-3 py-2 text-white font-mono font-bold text-sm outline-none focus:border-[#00E701]"
+                className="w-full bg-[#192230] border border-white/10 rounded-xl px-3 py-2 text-white font-mono font-bold text-sm outline-none focus:border-[#00E701]"
               />
             </div>
 
             {/* Target Multiplier */}
             <div className="flex flex-col gap-1">
-              <span className="text-xs font-semibold text-white/70">Cash Out At</span>
+              <span className="text-xs font-semibold text-white/80">Cash Out At</span>
               <input
                 type="number"
                 min="1.05"
                 step="0.1"
                 value={autoConfig.autoCashOut}
                 onChange={(e) => onUpdateAutoConfig({ autoCashOut: Math.max(1.05, Number(e.target.value)) })}
-                className="w-full bg-[#14161A] border border-white/10 rounded-xl px-3 py-2 text-white font-mono font-bold text-sm outline-none focus:border-[#00E701]"
+                className="w-full bg-[#192230] border border-white/10 rounded-xl px-3 py-2 text-white font-mono font-bold text-sm outline-none focus:border-[#00E701]"
               />
             </div>
 
             {/* Number of bets */}
             <div className="flex flex-col gap-1">
-              <span className="text-xs font-semibold text-white/70">Total Rounds</span>
+              <span className="text-xs font-semibold text-white/80">Total Rounds</span>
               <input
                 type="number"
                 min="1"
                 value={autoConfig.totalBets}
                 onChange={(e) => onUpdateAutoConfig({ totalBets: Math.max(1, Number(e.target.value)), remainingBets: Math.max(1, Number(e.target.value)) })}
-                className="w-full bg-[#14161A] border border-white/10 rounded-xl px-3 py-2 text-white font-mono font-bold text-sm outline-none focus:border-[#00E701]"
+                className="w-full bg-[#192230] border border-white/10 rounded-xl px-3 py-2 text-white font-mono font-bold text-sm outline-none focus:border-[#00E701]"
               />
             </div>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 p-3 bg-[#14161A] rounded-xl border border-white/5">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 p-3 bg-[#192230] rounded-xl border border-white/10">
             {/* On Win Strategy */}
             <div className="flex flex-col gap-1.5">
               <span className="text-xs font-bold text-[#00E701] flex items-center gap-1">
@@ -348,7 +348,7 @@ export function BettingControls({
                 <button
                   onClick={() => onUpdateAutoConfig({ onWinAction: 'RESET' })}
                   className={`px-3 py-1.5 rounded-lg text-xs font-bold cursor-pointer ${
-                    autoConfig.onWinAction === 'RESET' ? 'bg-[#00E701]/20 text-[#00E701] border border-[#00E701]' : 'bg-[#24272C] text-white/60'
+                    autoConfig.onWinAction === 'RESET' ? 'bg-[#00E701]/20 text-[#00E701] border border-[#00E701]' : 'bg-[#2E394E] hover:bg-[#3B4862] text-white/80'
                   }`}
                 >
                   Reset
@@ -356,7 +356,7 @@ export function BettingControls({
                 <button
                   onClick={() => onUpdateAutoConfig({ onWinAction: 'INCREASE' })}
                   className={`px-3 py-1.5 rounded-lg text-xs font-bold cursor-pointer ${
-                    autoConfig.onWinAction === 'INCREASE' ? 'bg-[#00E701]/20 text-[#00E701] border border-[#00E701]' : 'bg-[#24272C] text-white/60'
+                    autoConfig.onWinAction === 'INCREASE' ? 'bg-[#00E701]/20 text-[#00E701] border border-[#00E701]' : 'bg-[#2E394E] hover:bg-[#3B4862] text-white/80'
                   }`}
                 >
                   Increase %
@@ -366,7 +366,7 @@ export function BettingControls({
                     type="number"
                     value={autoConfig.onWinPercent}
                     onChange={(e) => onUpdateAutoConfig({ onWinPercent: Number(e.target.value) })}
-                    className="w-16 bg-[#1A1D24] border border-white/10 rounded-lg px-2 py-1 text-xs text-white font-mono"
+                    className="w-16 bg-[#222C3E] border border-white/10 rounded-lg px-2 py-1 text-xs text-white font-mono"
                   />
                 )}
               </div>
@@ -381,7 +381,7 @@ export function BettingControls({
                 <button
                   onClick={() => onUpdateAutoConfig({ onLossAction: 'RESET' })}
                   className={`px-3 py-1.5 rounded-lg text-xs font-bold cursor-pointer ${
-                    autoConfig.onLossAction === 'RESET' ? 'bg-[#FF4757]/20 text-[#FF4757] border border-[#FF4757]' : 'bg-[#24272C] text-white/60'
+                    autoConfig.onLossAction === 'RESET' ? 'bg-[#FF4757]/20 text-[#FF4757] border border-[#FF4757]' : 'bg-[#2E394E] hover:bg-[#3B4862] text-white/80'
                   }`}
                 >
                   Reset
@@ -389,7 +389,7 @@ export function BettingControls({
                 <button
                   onClick={() => onUpdateAutoConfig({ onLossAction: 'INCREASE' })}
                   className={`px-3 py-1.5 rounded-lg text-xs font-bold cursor-pointer ${
-                    autoConfig.onLossAction === 'INCREASE' ? 'bg-[#FF4757]/20 text-[#FF4757] border border-[#FF4757]' : 'bg-[#24272C] text-white/60'
+                    autoConfig.onLossAction === 'INCREASE' ? 'bg-[#FF4757]/20 text-[#FF4757] border border-[#FF4757]' : 'bg-[#2E394E] hover:bg-[#3B4862] text-white/80'
                   }`}
                 >
                   Increase %
@@ -399,7 +399,7 @@ export function BettingControls({
                     type="number"
                     value={autoConfig.onLossPercent}
                     onChange={(e) => onUpdateAutoConfig({ onLossPercent: Number(e.target.value) })}
-                    className="w-16 bg-[#1A1D24] border border-white/10 rounded-lg px-2 py-1 text-xs text-white font-mono"
+                    className="w-16 bg-[#222C3E] border border-white/10 rounded-lg px-2 py-1 text-xs text-white font-mono"
                   />
                 )}
               </div>
