@@ -1,15 +1,17 @@
 import React, { useEffect, useRef } from 'react';
-import { Alert, Animated, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Alert, Animated, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useQuery } from '@tanstack/react-query';
 import { useNavigation, CompositeNavigationProp } from '@react-navigation/native';
 import type { BottomTabNavigationProp } from '@react-navigation/bottom-tabs';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { Ionicons } from '@expo/vector-icons';
+import * as Clipboard from 'expo-clipboard';
 import { LinearGradient } from 'expo-linear-gradient';
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useAuth } from '../../auth/AuthContext';
 import { fetchWallet, fetchFollowing, fetchFollowers } from '../../api/feed';
+import { fetchSocialStats } from '../../api/social';
 import type { MainTabParamList, AppStackParamList } from '../../navigation/types';
 import { meColors, radii, spacing, type, type MeGridColor } from '../../theme';
 import { Avatar } from '../../components/Avatar';
@@ -111,6 +113,20 @@ export function ProfileScreen() {
   const walletQuery = useQuery({ queryKey: ['wallet'], queryFn: fetchWallet });
   const followingQuery = useQuery({ queryKey: ['feed', 'following'], queryFn: fetchFollowing });
   const followersQuery = useQuery({ queryKey: ['social', 'followers'], queryFn: fetchFollowers });
+  // Real GET /social/stats — this endpoint didn't exist at all before
+  // this pass (the mobile client already had a function calling it, but
+  // nothing on the backend ever answered). pkWins is a genuine count of
+  // settled PKBattle rows this user actually won, not a display number
+  // invented for the UI.
+  const statsQuery = useQuery({ queryKey: ['social', 'stats'], queryFn: fetchSocialStats });
+  const [copied, setCopied] = React.useState(false);
+
+  const handleCopyId = async () => {
+    if (!shortId || shortId === '—') return;
+    await Clipboard.setStringAsync(shortId);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  };
 
   const displayName = user?.displayName ?? user?.email ?? 'Guest';
   const shortId = user?.id ? user.id.slice(0, 7).toUpperCase() : '—';
@@ -140,6 +156,7 @@ export function ProfileScreen() {
     { key: 'bag', label: 'Bag', icon: 'briefcase-outline', color: 'chipPink', onPress: () => navigation.navigate('Bag') },
     { key: 'agency', label: 'My Agency', icon: 'business-outline', color: 'chipPurple', onPress: () => navigation.navigate('Agency') },
     { key: 'auth', label: 'Authentication', icon: 'shield-checkmark-outline', color: 'chipGreen', onPress: () => navigation.navigate('Authentication') },
+    { key: 'blocked', label: 'Blocked Users', icon: 'ban-outline', color: 'chipRed', onPress: () => navigation.navigate('BlockedUsers') },
     {
       key: 'follow',
       label: 'Follow Us',
@@ -187,10 +204,11 @@ export function ProfileScreen() {
                     </View>
                   </View>
                 </View>
-                <View style={styles.idRow}>
+                <Pressable style={styles.idRow} onPress={handleCopyId} hitSlop={8}>
                   <Text style={styles.idText}>ID: {shortId}</Text>
-                  <Ionicons name="copy-outline" size={13} color={meColors.textMuted} style={{ marginLeft: 4 }} />
-                </View>
+                  <Ionicons name={copied ? 'checkmark' : 'copy-outline'} size={13} color={copied ? '#1FD174' : meColors.textMuted} style={{ marginLeft: 4 }} />
+                  {copied && <Text style={styles.copiedText}>Copied</Text>}
+                </Pressable>
               </View>
               <Ionicons name="chevron-forward" size={20} color={meColors.textMuted} />
             </PressableScale>
@@ -205,15 +223,19 @@ export function ProfileScreen() {
             </PressableScale>
           </FadeInUp>
 
-          {/* Friends and Visitors show "—" rather than a number: neither
-              concept exists on the backend (no mutual-friend graph, no
-              profile-visit tracking), so a "0" would look like a real,
-              checked value instead of "not built yet". Following/Followers
-              are wired to the real social graph, and now actually push
-              into FollowListScreen — a fully-built screen that sat
-              completely unreachable from anywhere in the app until now. */}
+          {/* Visitors still shows "—": no profile-visit tracking exists
+              on the backend, so a "0" would look like a real, checked
+              value instead of "not built yet". Following/Followers are
+              wired to the real social graph and push into
+              FollowListScreen. PK Wins is now real too — a genuine count
+              of settled PKBattle rows this user actually won, from the
+              /social/stats endpoint added specifically to answer this. */}
           <FadeInUp index={2} style={styles.statsRow}>
-            <StatCell label="Friends" value="—" />
+            <StatCell
+              label="PK Wins"
+              value={String(statsQuery.data?.pkWins ?? 0)}
+              isLoading={statsQuery.isLoading}
+            />
             <StatCell
               label="Following"
               value={String(followingQuery.data?.length ?? 0)}
@@ -321,6 +343,7 @@ const styles = StyleSheet.create({
   vipPillText: { color: '#F7C567', fontSize: 10, fontWeight: '800' },
   idRow: { flexDirection: 'row', alignItems: 'center', marginTop: 4 },
   idText: { ...type.caption, color: meColors.textMuted, fontWeight: '500' },
+  copiedText: { ...type.caption, color: '#1FD174', fontWeight: '700', marginLeft: 4 },
 
   completionBanner: {
     flexDirection: 'row',

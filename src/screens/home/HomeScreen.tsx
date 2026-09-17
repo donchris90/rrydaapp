@@ -213,11 +213,8 @@ export function HomeScreen() {
       </ScrollView>
 
       <View style={[styles.fabColumn, { bottom: spacing.xl + insets.bottom }]}>
-        <Pressable style={styles.fab} onPress={() => navigation.navigate('MainTabs', { screen: 'Party' })}>
-          <Ionicons name="people" size={22} color="#FFF" />
-        </Pressable>
-        <Pressable style={[styles.fab, styles.fabPrimary]} onPress={() => navigation.navigate('MainTabs', { screen: 'GoLive' })}>
-          <Ionicons name="videocam" size={24} color="#FFF" />
+        <Pressable style={[styles.fab, styles.fabPrimary]} onPress={() => navigation.navigate('LiveFormatPicker')}>
+          <Ionicons name="add" size={26} color="#FFF" />
         </Pressable>
       </View>
     </GradientBackground>

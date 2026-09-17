@@ -1,391 +1,232 @@
-import React, { useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import React, { useEffect, useMemo, useState } from 'react';
+import {
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+  useWindowDimensions,
+} from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import Svg, { Path, Circle } from 'react-native-svg';
-import * as Crypto from 'expo-crypto';
-import * as Haptics from 'expo-haptics';
-import { useAudioPlayer } from 'expo-audio';
-import {
-  fetchRounds,
-  fetchMyEntries,
-  fetchCrashStatus,
-  placeEntry,
-  cashOutCrash,
-  fetchHistory,
-  type GameEntry,
-} from '../../api/games';
+import Svg, { Circle, Path } from 'react-native-svg';
 import { GradientBackground } from '../../components/GradientBackground';
-import { GradientButton } from '../../components/GradientButton';
-import { colors, radii, spacing, type } from '../../theme';
+import { colors, spacing } from '../../theme';
 
-const GAME_CODE = 'CRASH';
+/**
+ * Crash screen UI preview.
+ *
+ * This screen is intentionally non-wagering: it uses local demo values so the
+ * interface is useful even when the backend has no active Crash round. It does
+ * not place entries, cash out, move coins, or pretend that demo values came
+ * from the server.
+ */
 
-// A point actually received from the server — never a computed/faked
-// one. The curve below draws a smooth line through these real polled
-// values; it is a rendering of real data at 400ms resolution, not a
-// second, independent animation pretending to track the round.
-interface MultiplierPoint {
-  t: number; // seconds since this round went live, from Date.now() at poll time
-  m: number; // the real multiplier value returned by CrashService.getStatus at that instant
-}
+const DEMO_HISTORY = [2.14, 1.31, 4.72, 1.08, 3.26, 8.41, 1.67, 2.91, 1.22, 5.38];
 
-// Curve, countdown, quick-stake buttons, and live payout preview adapted
-// from a web reference the user provided — its visual language, not its
-// math. That reference generates crashPoint with Math.random() in the
-// browser and fabricates a pool of fake bot players; neither made it
-// into this screen. Every number here still comes from the real,
-// server-authoritative CrashService this project already had.
-function MultiplierCurve({ points, isCrashed, width, height }: { points: MultiplierPoint[]; isCrashed: boolean; width: number; height: number }) {
-  if (points.length < 2) return null;
+function DemoChart({ width, height, multiplier }: { width: number; height: number; multiplier: number }) {
+  const points = useMemo(() => {
+    const count = 9;
+    return Array.from({ length: count }, (_, i) => {
+      const t = i / (count - 1);
+      const m = 1 + (multiplier - 1) * Math.pow(t, 1.45);
+      return { x: 8 + t * (width - 16), y: height - 10 - ((m - 1) / Math.max(multiplier - 1, 1)) * (height - 25) };
+    });
+  }, [width, height, multiplier]);
 
-  const maxT = Math.max(points[points.length - 1].t, 1);
-  const maxM = Math.max(...points.map((p) => p.m), 2) * 1.15;
-  const padding = 8;
-
-  const toX = (t: number) => padding + (t / maxT) * (width - padding * 2);
-  const toY = (m: number) => height - padding - ((m - 1) / (maxM - 1)) * (height - padding * 2);
-
-  const linePath = points.map((p, i) => `${i === 0 ? 'M' : 'L'} ${toX(p.t).toFixed(1)} ${toY(p.m).toFixed(1)}`).join(' ');
-  const fillPath = `${linePath} L ${toX(points[points.length - 1].t).toFixed(1)} ${height - padding} L ${toX(points[0].t).toFixed(1)} ${height - padding} Z`;
+  const path = points.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x.toFixed(1)} ${p.y.toFixed(1)}`).join(' ');
+  const fill = `${path} L ${points[points.length - 1].x.toFixed(1)} ${height - 10} L ${points[0].x.toFixed(1)} ${height - 10} Z`;
   const tip = points[points.length - 1];
-  const lineColor = isCrashed ? colors.danger : '#1FD174';
 
   return (
     <Svg width={width} height={height}>
-      <Path d={fillPath} fill={lineColor} opacity={0.15} />
-      <Path d={linePath} stroke={lineColor} strokeWidth={3} fill="none" strokeLinecap="round" strokeLinejoin="round" />
-      {!isCrashed && <Circle cx={toX(tip.t)} cy={toY(tip.m)} r={6} fill="#FFF" />}
-      {!isCrashed && <Circle cx={toX(tip.t)} cy={toY(tip.m)} r={11} stroke={lineColor} strokeWidth={2} fill="none" opacity={0.6} />}
+      <Path d={fill} fill="#1FD174" opacity={0.13} />
+      <Path d={path} stroke="#1FD174" strokeWidth={3} fill="none" strokeLinecap="round" strokeLinejoin="round" />
+      <Circle cx={tip.x} cy={tip.y} r={7} fill="#FFF" />
+      <Circle cx={tip.x} cy={tip.y} r={13} stroke="#1FD174" strokeWidth={2} fill="none" opacity={0.55} />
     </Svg>
   );
-}
-
-// expo-audio players don't reset their own position after finishing —
-// seekTo(0) first is what makes a short effect replayable on every tap
-// rather than only ever playing once.
-function playSound(player: { seekTo: (s: number) => void; play: () => void }) {
-  player.seekTo(0);
-  player.play();
 }
 
 export function CrashScreen() {
   const navigation = useNavigation();
   const insets = useSafeAreaInsets();
-  const queryClient = useQueryClient();
-  // useAudioPlayer is a hook — called once at the top level per sound.
-  const betPlayer = useAudioPlayer(require('../../../assets/bet.wav'));
-  const cashoutPlayer = useAudioPlayer(require('../../../assets/cashout.wav'));
-  const crashPlayer = useAudioPlayer(require('../../../assets/crash.wav'));
-  const [stake, setStake] = useState('100');
-  const [autoCashout, setAutoCashout] = useState('');
-  const [now, setNow] = useState(Date.now());
-  const historyRef = useRef<MultiplierPoint[]>([]);
-  const roundStartRef = useRef<string | null>(null);
-  const crashHapticFiredRef = useRef<string | null>(null);
+  const { width } = useWindowDimensions();
+  const chartWidth = Math.max(280, Math.min(width - 48, 520));
+  const [multiplier, setMultiplier] = useState(2.36);
 
-  // Purely cosmetic ticker for the countdown text below — recomputed
-  // every 250ms from the round's own real lockAt timestamp, never a
-  // second timer pretending to know when the round will actually open.
   useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), 250);
-    return () => clearInterval(id);
-  }, []);
-
-  const roundsQuery = useQuery({
-    queryKey: ['games', GAME_CODE, 'rounds'],
-    queryFn: () => fetchRounds(GAME_CODE),
-    refetchInterval: 3000,
-  });
-  const currentRound = roundsQuery.data?.[0];
-  const currentRoundId = currentRound?.id;
-  const roundStatus = currentRound?.status;
-
-  const crashStatusQuery = useQuery({
-    queryKey: ['games', 'crash-status', currentRoundId],
-    queryFn: () => fetchCrashStatus(currentRoundId!),
-    enabled: !!currentRoundId && roundStatus === 'LOCKED',
-    refetchInterval: 400,
-  });
-
-  // Reset the recorded curve whenever a new round starts, and append
-  // each real polled point as it arrives.
-  useEffect(() => {
-    if (roundStartRef.current !== currentRoundId) {
-      roundStartRef.current = currentRoundId ?? null;
-      historyRef.current = [];
-    }
-    if (crashStatusQuery.data?.status === 'LIVE' && crashStatusQuery.data.multiplier != null) {
-      const t = currentRound?.lockAt ? (Date.now() - new Date(currentRound.lockAt).getTime()) / 1000 : historyRef.current.length * 0.4;
-      historyRef.current = [...historyRef.current, { t: Math.max(0, t), m: crashStatusQuery.data.multiplier }].slice(-200);
-    }
-  }, [crashStatusQuery.data, currentRoundId, currentRound?.lockAt]);
-
-  const myEntriesQuery = useQuery({
-    queryKey: ['games', 'myEntries', currentRoundId],
-    queryFn: () => fetchMyEntries(currentRoundId!),
-    enabled: !!currentRoundId,
-    refetchInterval: 3000,
-  });
-  const myEntry: GameEntry | undefined = myEntriesQuery.data?.[0];
-
-  // A real haptic exactly once per crash, not once per poll — the
-  // status stays 'CRASHED' across many subsequent 400ms polls while
-  // this screen keeps showing it, so this needs its own one-shot guard
-  // rather than firing inline in the render.
-  useEffect(() => {
-    if (crashStatusQuery.data?.status === 'CRASHED' && currentRoundId && crashHapticFiredRef.current !== currentRoundId) {
-      crashHapticFiredRef.current = currentRoundId;
-      playSound(crashPlayer);
-      if (myEntry?.status === 'PLACED') {
-        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-      } else {
-        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
-      }
-    }
-  }, [crashStatusQuery.data?.status, currentRoundId, myEntry?.status]);
-
-  const historyQuery = useQuery({
-    queryKey: ['games', GAME_CODE, 'history'],
-    queryFn: () => fetchHistory(GAME_CODE),
-  });
-
-  const placeMutation = useMutation({
-    mutationFn: () => {
-      const stakeAmount = parseInt(stake, 10);
-      const autoCashoutMultiplier = autoCashout.trim() ? parseFloat(autoCashout) : undefined;
-      return placeEntry(currentRoundId!, {
-        selection: [],
-        stakeAmount,
-        idempotencyKey: Crypto.randomUUID(),
-        autoCashoutMultiplier,
+    const timer = setInterval(() => {
+      setMultiplier((value) => {
+        const next = value + 0.015 + value * 0.0025;
+        return next >= 4.8 ? 2.05 : Number(next.toFixed(2));
       });
-    },
-    onSuccess: () => {
-      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-      playSound(betPlayer);
-      queryClient.invalidateQueries({ queryKey: ['games', 'myEntries', currentRoundId] });
-      queryClient.invalidateQueries({ queryKey: ['wallet'] });
-    },
-    onError: (error: any) => {
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-      Alert.alert('Could not place bet', error?.response?.data?.message ?? 'Something went wrong');
-    },
-  });
-
-  const cashOutMutation = useMutation({
-    mutationFn: () => cashOutCrash(currentRoundId!),
-    onSuccess: (entry) => {
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      playSound(cashoutPlayer);
-      queryClient.invalidateQueries({ queryKey: ['games', 'myEntries', currentRoundId] });
-      queryClient.invalidateQueries({ queryKey: ['wallet'] });
-      Alert.alert('Cashed out!', `You won ${entry.rewardAmount.toLocaleString()} coins at ${entry.cashedOutMultiplier}x.`);
-    },
-    onError: (error: any) => {
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-      Alert.alert('Too late', error?.response?.data?.message ?? "The round already crashed before this reached the server.");
-    },
-  });
-
-  const isLive = roundStatus === 'LOCKED';
-  const isOpen = roundStatus === 'OPEN' || roundStatus === 'SCHEDULED';
-  const isCrashed = crashStatusQuery.data?.status === 'CRASHED';
-  const multiplier = crashStatusQuery.data?.multiplier ?? 1.0;
-  const canCashOut = isLive && myEntry?.status === 'PLACED' && !isCrashed;
-  const alreadyEnteredThisRound = !!myEntry;
-  const stakeNum = parseInt(stake, 10) || 0;
-  const livePayout = canCashOut ? Math.floor((myEntry?.coinAmount ?? 0) * multiplier) : 0;
-
-  const secondsToLock = currentRound?.lockAt ? Math.max(0, (new Date(currentRound.lockAt).getTime() - now) / 1000) : null;
+    }, 350);
+    return () => clearInterval(timer);
+  }, []);
 
   return (
     <GradientBackground style={{ paddingTop: insets.top }}>
-      <View style={styles.header}>
-        <Pressable onPress={() => navigation.goBack()} hitSlop={12} style={styles.backButton}>
-          <Ionicons name="arrow-back" size={22} color={colors.textPrimary} />
-        </Pressable>
-        <Text style={styles.title}>Crash</Text>
-      </View>
-
-      <View style={styles.multiplierCard}>
-        {!currentRoundId ? (
-          <ActivityIndicator color={colors.primary} />
-        ) : isCrashed ? (
-          <>
-            <MultiplierCurve points={historyRef.current} isCrashed width={300} height={120} />
-            <Text style={styles.crashedLabel}>CRASHED AT</Text>
-            <Text style={styles.crashedMultiplier}>{(crashStatusQuery.data?.multiplier ?? 0).toFixed(2)}x</Text>
-          </>
-        ) : isLive ? (
-          <>
-            <MultiplierCurve points={historyRef.current} isCrashed={false} width={300} height={120} />
-            <Text style={styles.liveLabel}>LIVE</Text>
-            <Text style={styles.multiplierText}>{multiplier.toFixed(2)}x</Text>
-            {canCashOut && <Text style={styles.livePayoutText}>Live win: {livePayout.toLocaleString()} coins</Text>}
-          </>
-        ) : (
-          <>
-            <Ionicons name="hourglass-outline" size={28} color={colors.textMuted} />
-            <Text style={styles.waitingText}>
-              {secondsToLock != null ? `Starts in ${secondsToLock.toFixed(1)}s` : 'Waiting for next round...'}
-            </Text>
-          </>
-        )}
-      </View>
-
-      {myEntry && (
-        <View style={styles.entryStatusCard}>
-          <Text style={styles.entryStatusText}>
-            {myEntry.status === 'PLACED' && `Bet placed: ${myEntry.coinAmount.toLocaleString()} coins`}
-            {myEntry.status === 'WON' && `You won ${myEntry.rewardAmount.toLocaleString()} coins at ${myEntry.cashedOutMultiplier}x`}
-            {myEntry.status === 'LOST' && `You lost ${myEntry.coinAmount.toLocaleString()} coins`}
-          </Text>
-        </View>
-      )}
-
-      {canCashOut ? (
-        <Pressable
-          style={styles.cashOutButton}
-          onPress={() => cashOutMutation.mutate()}
-          disabled={cashOutMutation.isPending}
-        >
-          <Text style={styles.cashOutText}>
-            {cashOutMutation.isPending ? 'Cashing out...' : `CASH OUT · ${livePayout.toLocaleString()} coins`}
-          </Text>
-        </Pressable>
-      ) : isOpen && !alreadyEnteredThisRound ? (
-        <View style={styles.betCard}>
-          <Text style={styles.betLabel}>Stake (coins)</Text>
-          <View style={styles.stakeRow}>
-            <TextInput style={[styles.betInput, { flex: 1 }]} value={stake} onChangeText={setStake} keyboardType="number-pad" />
-            <Pressable style={styles.quickButton} onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setStake(String(Math.max(1, Math.floor(stakeNum / 2)))); }}>
-              <Text style={styles.quickButtonText}>½</Text>
-            </Pressable>
-            <Pressable style={styles.quickButton} onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setStake(String(stakeNum * 2)); }}>
-              <Text style={styles.quickButtonText}>2x</Text>
-            </Pressable>
-          </View>
-          <Text style={styles.betLabel}>Auto cash-out at (optional, e.g. 2.5)</Text>
-          <TextInput
-            style={styles.betInput}
-            value={autoCashout}
-            onChangeText={setAutoCashout}
-            keyboardType="decimal-pad"
-            placeholder="Leave blank to cash out manually"
-            placeholderTextColor={colors.textMuted}
-          />
-          <View style={{ marginTop: spacing.sm }}>
-            <GradientButton
-              label={placeMutation.isPending ? 'Placing...' : 'Place Bet'}
-              onPress={() => placeMutation.mutate()}
-              loading={placeMutation.isPending}
-              disabled={!stakeNum}
-            />
-          </View>
-        </View>
-      ) : isOpen && alreadyEnteredThisRound ? (
-        <Text style={styles.waitingText}>Bet placed — waiting for the round to start.</Text>
-      ) : null}
-
-      <Text style={styles.historyTitle}>Recent crashes</Text>
-      <View style={styles.historyRow}>
-        {(historyQuery.data ?? []).slice(0, 10).map((row) => {
-          const crashPoint = (row.result as any)?.crashPoint;
-          if (crashPoint == null) return null;
-          return (
-            <View key={row.id} style={[styles.historyChip, crashPoint >= 2 ? styles.historyChipGood : styles.historyChipBad]}>
-              <Text style={styles.historyChipText}>{crashPoint.toFixed(2)}x</Text>
+      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.content}>
+        <View style={styles.header}>
+          <Pressable onPress={() => navigation.goBack()} hitSlop={12} style={styles.backButton}>
+            <Ionicons name="arrow-back" size={23} color="#F5F6F8" />
+          </Pressable>
+          <View style={styles.titleBlock}>
+            <View style={styles.titleRow}>
+              <Text style={styles.rocket}>🚀</Text>
+              <Text style={styles.title}>Crash</Text>
             </View>
-          );
-        })}
-      </View>
+            <Text style={styles.subtitle}>Predict. Watch. Learn.</Text>
+          </View>
+          <Pressable style={styles.settingsButton}>
+            <Ionicons name="settings-outline" size={22} color="#B9B2D4" />
+          </Pressable>
+        </View>
+
+        <View style={styles.demoBanner}>
+          <Ionicons name="information-circle-outline" size={16} color="#1FD174" />
+          <Text style={styles.demoBannerText}>DEMO PREVIEW · No wagers or balance changes</Text>
+        </View>
+
+        <View style={styles.liveCard}>
+          <View style={styles.cardTop}>
+            <View>
+              <View style={styles.liveTitleRow}>
+                <View style={styles.liveDot} />
+                <Text style={styles.liveTitle}>LIVE PREVIEW</Text>
+              </View>
+              <Text style={styles.roundText}>Sample Round #4827</Text>
+            </View>
+            <View style={styles.climbingPill}>
+              <Ionicons name="trending-up" size={15} color="#07130D" />
+              <Text style={styles.climbingText}>CLIMBING</Text>
+            </View>
+          </View>
+
+          <View style={styles.multiplierBox}>
+            <Text style={styles.multiplierLabel}>CURRENT MULTIPLIER</Text>
+            <Text style={styles.multiplier}>{multiplier.toFixed(2)}x</Text>
+          </View>
+
+          <DemoChart width={chartWidth - 30} height={170} multiplier={multiplier} />
+
+          <View style={styles.axisRow}>
+            <Text style={styles.axis}>0s</Text>
+            <Text style={styles.axis}>10s</Text>
+            <Text style={styles.axis}>20s</Text>
+            <Text style={styles.axis}>30s</Text>
+            <Text style={styles.axis}>40s</Text>
+          </View>
+
+          <View style={styles.cardFooter}>
+            <Text style={styles.footerStat}>UI PREVIEW</Text>
+            <Text style={styles.footerStat}>SAMPLE DATA</Text>
+            <Text style={styles.footerStat}>NOT SERVER DATA</Text>
+          </View>
+        </View>
+
+        <View style={styles.sectionHeader}>
+          <Text style={styles.sectionTitle}>Game Preview</Text>
+          <Text style={styles.sectionHint}>UI only</Text>
+        </View>
+
+        <View style={styles.previewCard}>
+          <View style={styles.previewRow}>
+            <View style={styles.iconCircle}>
+              <Ionicons name="eye-outline" size={20} color="#1FD174" />
+            </View>
+            <View style={styles.previewTextBlock}>
+              <Text style={styles.previewTitle}>Watch the multiplier climb</Text>
+              <Text style={styles.previewText}>This preview demonstrates the intended active-round layout without submitting a wager.</Text>
+            </View>
+          </View>
+
+          <View style={styles.controlRow}>
+            <View style={styles.controlBox}>
+              <Text style={styles.controlLabel}>STAKE</Text>
+              <Text style={styles.disabledValue}>Demo only</Text>
+            </View>
+            <View style={styles.controlBox}>
+              <Text style={styles.controlLabel}>AUTO CASHOUT</Text>
+              <Text style={styles.disabledValue}>Demo only</Text>
+            </View>
+          </View>
+
+          <View style={styles.disabledButton}>
+            <Ionicons name="lock-closed-outline" size={17} color="#858091" />
+            <Text style={styles.disabledButtonText}>WAGERING DISABLED IN PREVIEW</Text>
+          </View>
+        </View>
+
+        <View style={styles.sectionHeader}>
+          <Text style={styles.sectionTitle}>Recent Game History</Text>
+          <Text style={styles.sectionHint}>Sample</Text>
+        </View>
+
+        <View style={styles.historyCard}>
+          <View style={styles.historyRow}>
+            {DEMO_HISTORY.map((value, index) => (
+              <View key={`${value}-${index}`} style={[styles.historyChip, value >= 2 ? styles.historyGood : styles.historyLow]}>
+                <Text style={styles.historyText}>{value.toFixed(2)}x</Text>
+              </View>
+            ))}
+          </View>
+          <Text style={styles.historyNote}>Sample values are shown only to demonstrate the final UI layout.</Text>
+        </View>
+      </ScrollView>
     </GradientBackground>
   );
 }
 
 const styles = StyleSheet.create({
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.sm,
-    paddingHorizontal: spacing.md,
-    paddingBottom: spacing.sm,
-  },
-  backButton: { padding: spacing.xs },
-  title: { ...type.h2, color: colors.textPrimary },
-  multiplierCard: {
-    marginHorizontal: spacing.md,
-    marginTop: spacing.md,
-    backgroundColor: colors.surface,
-    borderRadius: radii.lg,
-    borderWidth: 1,
-    borderColor: colors.borderLight,
-    paddingVertical: spacing.lg,
-    alignItems: 'center',
-    justifyContent: 'center',
-    minHeight: 200,
-    overflow: 'hidden',
-  },
-  liveLabel: { color: colors.pink, fontWeight: '800', letterSpacing: 2, fontSize: 12, marginTop: spacing.sm },
-  multiplierText: { color: colors.gold, fontSize: 44, fontWeight: '900' },
-  livePayoutText: { color: '#1FD174', fontSize: 13, fontWeight: '700', marginTop: 4 },
-  crashedLabel: { color: colors.danger, fontWeight: '800', letterSpacing: 2, fontSize: 12, marginTop: spacing.sm },
-  crashedMultiplier: { color: colors.danger, fontSize: 36, fontWeight: '900' },
-  waitingText: { ...type.body, color: colors.textSecondary, marginTop: spacing.sm },
-  entryStatusCard: {
-    marginHorizontal: spacing.md,
-    marginTop: spacing.sm,
-    padding: spacing.sm,
-    backgroundColor: colors.surfaceRaised,
-    borderRadius: radii.md,
-    alignItems: 'center',
-  },
-  entryStatusText: { ...type.body, color: colors.textPrimary },
-  cashOutButton: {
-    marginHorizontal: spacing.md,
-    marginTop: spacing.md,
-    backgroundColor: colors.danger,
-    borderRadius: radii.lg,
-    paddingVertical: spacing.lg,
-    alignItems: 'center',
-  },
-  cashOutText: { color: '#FFF', fontSize: 18, fontWeight: '900' },
-  betCard: {
-    marginHorizontal: spacing.md,
-    marginTop: spacing.md,
-    backgroundColor: colors.surface,
-    borderRadius: radii.lg,
-    borderWidth: 1,
-    borderColor: colors.borderLight,
-    padding: spacing.md,
-  },
-  betLabel: { ...type.caption, color: colors.textSecondary, fontWeight: '700', marginTop: spacing.sm },
-  stakeRow: { flexDirection: 'row', gap: spacing.xs, marginTop: spacing.xs, alignItems: 'center' },
-  quickButton: {
-    paddingHorizontal: spacing.sm,
-    paddingVertical: spacing.md,
-    backgroundColor: colors.surfaceRaised,
-    borderRadius: radii.md,
-    borderWidth: 1,
-    borderColor: colors.borderLight,
-  },
-  quickButtonText: { color: colors.textPrimary, fontWeight: '700' },
-  betInput: {
-    backgroundColor: colors.surfaceRaised,
-    borderRadius: radii.md,
-    borderWidth: 1,
-    borderColor: colors.borderLight,
-    padding: spacing.md,
-    color: colors.textPrimary,
-    marginTop: spacing.xs,
-  },
-  historyTitle: { ...type.bodyStrong, color: colors.textPrimary, marginHorizontal: spacing.md, marginTop: spacing.lg, marginBottom: spacing.sm },
-  historyRow: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.xs, paddingHorizontal: spacing.md },
-  historyChip: { paddingHorizontal: spacing.sm, paddingVertical: 6, borderRadius: radii.pill },
-  historyChipGood: { backgroundColor: 'rgba(76, 217, 100, 0.2)' },
-  historyChipBad: { backgroundColor: 'rgba(245, 73, 91, 0.2)' },
-  historyChipText: { color: colors.textPrimary, fontWeight: '700', fontSize: 12 },
+  content: { paddingBottom: 28 },
+  header: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: spacing.md, paddingBottom: 12 },
+  backButton: { padding: 8, marginRight: 8 },
+  titleBlock: { flex: 1 },
+  titleRow: { flexDirection: 'row', alignItems: 'center', gap: 7 },
+  rocket: { fontSize: 23 },
+  title: { color: '#F7F5FA', fontSize: 22, fontWeight: '900', letterSpacing: 0.2 },
+  subtitle: { color: '#A69DBD', fontSize: 11, marginTop: 1 },
+  settingsButton: { width: 45, height: 45, borderRadius: 23, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(255,255,255,0.07)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.10)' },
+  demoBanner: { marginHorizontal: 16, marginBottom: 10, paddingHorizontal: 12, paddingVertical: 9, borderRadius: 10, flexDirection: 'row', alignItems: 'center', gap: 7, backgroundColor: 'rgba(31,209,116,0.07)', borderWidth: 1, borderColor: 'rgba(31,209,116,0.18)' },
+  demoBannerText: { color: '#A9B4AD', fontSize: 9, fontWeight: '800', letterSpacing: 0.2 },
+  liveCard: { marginHorizontal: 12, backgroundColor: '#17142C', borderRadius: 20, borderWidth: 1, borderColor: 'rgba(255,255,255,0.11)', overflow: 'hidden', paddingTop: 15 },
+  cardTop: { paddingHorizontal: 15, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  liveTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  liveDot: { width: 7, height: 7, borderRadius: 4, backgroundColor: '#1FD174' },
+  liveTitle: { color: '#1FD174', fontSize: 11, fontWeight: '900', letterSpacing: 1.2 },
+  roundText: { color: '#777189', fontSize: 10, marginTop: 4 },
+  climbingPill: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 11, paddingVertical: 8, borderRadius: 18, backgroundColor: '#1FD174' },
+  climbingText: { color: '#07130D', fontSize: 9, fontWeight: '900', letterSpacing: 0.7 },
+  multiplierBox: { alignSelf: 'center', marginTop: 14, minWidth: 185, paddingHorizontal: 24, paddingVertical: 9, borderRadius: 17, borderWidth: 1, borderColor: '#1FD174', backgroundColor: 'rgba(31,209,116,0.06)', alignItems: 'center' },
+  multiplierLabel: { color: '#B4ADBF', fontSize: 9, fontWeight: '800', letterSpacing: 1 },
+  multiplier: { color: '#1FD174', fontSize: 46, lineHeight: 52, fontWeight: '900' },
+  axisRow: { flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 15, marginTop: -3 },
+  axis: { color: '#777189', fontSize: 9 },
+  cardFooter: { marginTop: 10, borderTopWidth: 1, borderTopColor: 'rgba(255,255,255,0.06)', paddingHorizontal: 15, paddingVertical: 10, flexDirection: 'row', gap: 14 },
+  footerStat: { color: '#706A7F', fontSize: 8, fontWeight: '900' },
+  sectionHeader: { marginHorizontal: 17, marginTop: 18, marginBottom: 9, flexDirection: 'row', alignItems: 'baseline', justifyContent: 'space-between' },
+  sectionTitle: { color: '#F3F1F7', fontSize: 15, fontWeight: '900' },
+  sectionHint: { color: '#716B7F', fontSize: 9, fontWeight: '800' },
+  previewCard: { marginHorizontal: 12, padding: 14, backgroundColor: '#17142C', borderRadius: 18, borderWidth: 1, borderColor: 'rgba(255,255,255,0.09)' },
+  previewRow: { flexDirection: 'row', alignItems: 'center', gap: 11 },
+  iconCircle: { width: 40, height: 40, borderRadius: 20, backgroundColor: 'rgba(31,209,116,0.09)', alignItems: 'center', justifyContent: 'center' },
+  previewTextBlock: { flex: 1 },
+  previewTitle: { color: '#F0EEF4', fontSize: 12, fontWeight: '900' },
+  previewText: { color: '#817A90', fontSize: 9, lineHeight: 14, marginTop: 3 },
+  controlRow: { flexDirection: 'row', gap: 8, marginTop: 13 },
+  controlBox: { flex: 1, padding: 11, borderRadius: 11, backgroundColor: '#0F0D1D', borderWidth: 1, borderColor: 'rgba(255,255,255,0.07)' },
+  controlLabel: { color: '#777184', fontSize: 8, fontWeight: '900', letterSpacing: 0.8 },
+  disabledValue: { color: '#A49EAE', fontSize: 11, fontWeight: '800', marginTop: 5 },
+  disabledButton: { marginTop: 11, borderRadius: 12, paddingVertical: 12, alignItems: 'center', justifyContent: 'center', flexDirection: 'row', gap: 7, backgroundColor: '#292632' },
+  disabledButtonText: { color: '#8B8594', fontSize: 10, fontWeight: '900', letterSpacing: 0.4 },
+  historyCard: { marginHorizontal: 12, padding: 13, backgroundColor: '#17142C', borderRadius: 17, borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)' },
+  historyRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
+  historyChip: { paddingHorizontal: 10, paddingVertical: 7, borderRadius: 9, borderWidth: 1 },
+  historyGood: { backgroundColor: 'rgba(31,209,116,0.08)', borderColor: 'rgba(31,209,116,0.18)' },
+  historyLow: { backgroundColor: 'rgba(245,73,91,0.08)', borderColor: 'rgba(245,73,91,0.14)' },
+  historyText: { color: '#E9E7EE', fontSize: 10, fontWeight: '900' },
+  historyNote: { color: '#6E687B', fontSize: 8, lineHeight: 12, marginTop: 10 },
 });

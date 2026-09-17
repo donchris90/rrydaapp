@@ -22,6 +22,7 @@ export async function createRoom(params: {
   privacy?: PartyRoom['privacy'];
   seatCount?: number;
   category?: string;
+  themeColor?: string;
 }): Promise<PartyRoom> {
   const response = await apiClient.post<PartyRoom>('/rooms', params);
   return response.data;

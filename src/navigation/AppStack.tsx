@@ -24,6 +24,8 @@ import { PreRoomScreen } from '../screens/party/PreRoomScreen';
 import { CrashScreen } from '../screens/game/CrashScreen';
 import { ConversationScreen } from '../screens/inbox/ConversationScreen';
 import { CallScreen } from '../screens/calls/CallScreen';
+import { LiveFormatPickerScreen } from '../screens/live/LiveFormatPickerScreen';
+import { BlockedUsersScreen } from '../screens/profile/BlockedUsersScreen';
 import { IncomingCallOverlay } from '../components/IncomingCallOverlay';
 import { colors } from '../theme';
 
@@ -40,7 +42,10 @@ export function AppStack() {
         }}
       >
       <Stack.Screen name="MainTabs" component={MainTabs} options={{ headerShown: false }} />
-      <Stack.Screen name="GameCenter" component={GameCenterScreen} options={{ title: 'Game Center' }} />
+      {/* headerShown: false — the redesigned hub renders its own title row
+          (plus a live wallet chip next to it), matching the web reference's
+          hub screen, which has no separate native-style title bar either. */}
+      <Stack.Screen name="GameCenter" component={GameCenterScreen} options={{ headerShown: false }} />
       <Stack.Screen name="SumDice" component={SumDiceScreen} options={{ title: 'Lucky Number' }} />
       <Stack.Screen name="Search" component={SearchScreen} options={{ title: 'Search', headerShown: false }} />
       <Stack.Screen name="FollowList" component={FollowListScreen} options={{ headerShown: false }} />
@@ -62,6 +67,8 @@ export function AppStack() {
       <Stack.Screen name="CrashGame" component={CrashScreen} options={{ headerShown: false }} />
       <Stack.Screen name="Conversation" component={ConversationScreen} options={{ headerShown: false }} />
       <Stack.Screen name="Call" component={CallScreen} options={{ headerShown: false, presentation: 'fullScreenModal' }} />
+      <Stack.Screen name="LiveFormatPicker" component={LiveFormatPickerScreen} options={{ headerShown: false }} />
+      <Stack.Screen name="BlockedUsers" component={BlockedUsersScreen} options={{ headerShown: false }} />
     </Stack.Navigator>
       <IncomingCallOverlay />
     </>

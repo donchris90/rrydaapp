@@ -6,13 +6,13 @@ export type AuthStackParamList = {
 export type MainTabParamList = {
   Home: undefined;
   Party: undefined;
-  GoLive: undefined;
+  GoLive: { initialTitle?: string; initialThemeColor?: string } | undefined;
   Inbox: undefined;
   Profile: undefined;
 };
 
 export type AppStackParamList = {
-  MainTabs: { screen?: keyof MainTabParamList } | undefined;
+  MainTabs: { screen?: keyof MainTabParamList; params?: Record<string, unknown> } | undefined;
   GameCenter: undefined;
   SumDice: undefined;
   Search: undefined;
@@ -31,8 +31,10 @@ export type AppStackParamList = {
   WatchHistory: undefined;
   Reward: undefined;
   Room: { roomId: string; initialVideoEnabled?: boolean };
-  PreRoom: undefined;
+  PreRoom: { initialMode?: 'video' | 'voice'; initialThemeColor?: string } | undefined;
   CrashGame: undefined;
   Conversation: { userId: string; displayName: string | null };
   Call: { callId: string; otherUserId: string; otherUserDisplayName: string | null; isIncoming: boolean };
+  LiveFormatPicker: undefined;
+  BlockedUsers: undefined;
 };

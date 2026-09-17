@@ -63,7 +63,12 @@ export function AnimatedTabBar({ state, descriptors, navigation }: BottomTabBarP
         };
 
         if (route.name === 'GoLive') {
-          return <GoLiveTabItem key={route.key} focused={isFocused} onPress={onPress} />;
+          // Escapes up to the parent AppStack navigator rather than
+          // switching to this tab directly — the real entry point is
+          // now the unified format picker (title, format, real
+          // streamer-theme selection), not the bare GoLive screen.
+          const openFormatPicker = () => navigation.getParent()?.navigate('LiveFormatPicker' as never);
+          return <GoLiveTabItem key={route.key} focused={isFocused} onPress={openFormatPicker} />;
         }
 
         const icon = ICONS[route.name];
@@ -91,9 +96,12 @@ export function AnimatedTabBar({ state, descriptors, navigation }: BottomTabBarP
 function GoLiveTabItem({ focused, onPress }: { focused: boolean; onPress: () => void }) {
   return (
     <Pressable onPress={onPress} style={styles.item} hitSlop={8}>
-      <LinearGradient colors={gradients.hero} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={[styles.goLivePill, glow.pink]}>
-        <Ionicons name="add" size={26} color={colors.textPrimary} />
+      <LinearGradient colors={['#22D3EE', colors.primary, colors.pink]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={[styles.goLiveRing, glow.pink]}>
+        <View style={styles.goLiveInner}>
+          <Ionicons name="videocam" size={20} color="#FFF" />
+        </View>
       </LinearGradient>
+      <Text style={styles.goLiveLabel}>GO LIVE</Text>
     </Pressable>
   );
 }
@@ -164,15 +172,29 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  goLivePill: {
-    width: 50,
-    height: 50,
+  goLiveRing: {
+    width: 54,
+    height: 54,
     borderRadius: radii.pill,
     alignItems: 'center',
     justifyContent: 'center',
-    marginTop: -22, // raises the button above the bar's top edge
-    borderWidth: 3,
-    borderColor: colors.bgDeepest,
+    marginTop: -26, // raises the button above the bar's top edge
+    padding: 3, // leaves the gradient visible as a ring around goLiveInner
+  },
+  goLiveInner: {
+    width: '100%',
+    height: '100%',
+    borderRadius: radii.pill,
+    backgroundColor: colors.bgDeepest,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  goLiveLabel: {
+    color: colors.pink,
+    fontSize: 9,
+    fontWeight: '800',
+    letterSpacing: 0.5,
+    marginTop: 2,
   },
   badge: {
     position: 'absolute',

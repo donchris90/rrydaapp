@@ -16,11 +16,13 @@ export interface LiveSessionRaw {
   startedAt: string | null;
   endedAt: string | null;
   providerChannel: string;
+  themeColor: string | null;
 }
 
 export async function createLiveSession(params: {
   title: string;
   category?: string;
+  themeColor?: string;
 }): Promise<{ session: LiveSessionRaw; token: string }> {
   const response = await apiClient.post('/live', params);
   return response.data;

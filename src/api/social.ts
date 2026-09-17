@@ -26,3 +26,18 @@ export async function followUser(userId: string): Promise<void> {
 export async function unfollowUser(userId: string): Promise<void> {
   await apiClient.delete(`/social/follow/${userId}`);
 }
+
+export interface BlockedUser {
+  userId: string;
+  displayName: string | null;
+  blockedAt: string;
+}
+
+export async function fetchBlockedUsers(): Promise<BlockedUser[]> {
+  const response = await apiClient.get<BlockedUser[]>('/social/blocked');
+  return response.data;
+}
+
+export async function unblockUser(userId: string): Promise<void> {
+  await apiClient.delete(`/social/block/${userId}`);
+}

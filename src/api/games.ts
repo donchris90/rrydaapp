@@ -6,8 +6,8 @@ export interface GameRound {
   entryPrice: number;
   openAt: string;
   lockAt: string;
-  result: { dice?: number[]; sum?: number } | null;
-  status: 'SCHEDULED' | 'OPEN' | 'LOCKED' | 'RESOLVING' | 'SETTLED' | 'CANCELLED';
+  result: { dice?: number[]; sum?: number; crashPoint?: number } | null;
+  status: 'SCHEDULED' | 'OPEN' | 'LOCKED' | 'LIVE' | 'CRASHED' | 'RESOLVING' | 'SETTLED' | 'CANCELLED';
   settledAt: string | null;
 }
 
@@ -55,7 +55,7 @@ export async function fetchMyEntries(roundId: string): Promise<GameEntry[]> {
 export interface GameHistoryRow {
   roundId: string;
   settledAt: string | null;
-  result: { dice?: number[]; sum?: number } | null;
+  result: { dice?: number[]; sum?: number; crashPoint?: number } | null;
   winners: number;
   prize: number;
   players: number;
@@ -76,6 +76,24 @@ export interface ResultClassification {
 
 export async function fetchStats(gameCode: string): Promise<{ applicable: boolean; sequence?: ResultClassification[] }> {
   const response = await apiClient.get(`/games/${gameCode}/stats`);
+  return response.data;
+}
+
+// Biggest recent payouts for a game — see games.controller.ts's bigWins().
+// Real settled wins only; there is no username on these (GameEntry only
+// stores userId, and there's no public username-lookup endpoint), so
+// anything rendering this must not invent a display name for the winner.
+export interface BigWin {
+  id: string;
+  userId: string;
+  rewardAmount: number;
+  coinAmount: number;
+  roundId: string;
+  createdAt: string;
+}
+
+export async function fetchBigWins(gameCode: string): Promise<BigWin[]> {
+  const response = await apiClient.get<BigWin[]>(`/games/${gameCode}/big-wins`);
   return response.data;
 }
 

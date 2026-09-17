@@ -33,7 +33,7 @@ export interface Referral {
 export interface SocialStats {
   following: number;
   followers: number;
-  friends: number;
+  pkWins: number;
 }
 
 // Null means "not in an agency," distinct from the query still loading.

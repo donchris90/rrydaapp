@@ -9,7 +9,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
-import { useNavigation } from '@react-navigation/native';
+import { useNavigation, useRoute, type RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useMutation, useQuery } from '@tanstack/react-query';
@@ -37,12 +37,13 @@ const SEAT_OPTIONS = [
 
 export function PreRoomScreen() {
   const navigation = useNavigation<NativeStackNavigationProp<AppStackParamList>>();
+  const route = useRoute<RouteProp<AppStackParamList, 'PreRoom'>>();
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
 
   const [title, setTitle] = useState('');
   const [category, setCategory] = useState<string | null>(null);
-  const [mode, setMode] = useState<'video' | 'voice'>('video');
+  const [mode, setMode] = useState<'video' | 'voice'>(route.params?.initialMode ?? 'video');
   const [seatCount, setSeatCount] = useState(8);
   const [isToolsSheetOpen, setIsToolsSheetOpen] = useState(false);
 
@@ -83,6 +84,7 @@ export function PreRoomScreen() {
         title: title.trim() || 'Party Room',
         seatCount,
         category: category ?? undefined,
+        themeColor: route.params?.initialThemeColor,
       }),
     onSuccess: (room) => {
       navigation.replace('Room', {

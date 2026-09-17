@@ -22,30 +22,41 @@ const NUMBERS = Array.from({ length: MAX_NUMBER + 1 }, (_, i) => i);
 const STAKE_STEP = 50;
 const MIN_STAKE = 50;
 
-// Bright, glossy white/sky-blue palette — a full replacement of the
-// earlier dark metallic-gold theme, at the user's explicit request
-// ("the whole screen") after seeing a reference app with this look:
-// white "candy button" tiles with a bottom-edge bevel shadow, a
-// white/cyan glossy capsule for the dice reels, sky-blue for selection,
-// emerald for the winning number, amber reserved for the one accent
-// that carries real meaning (the settled sum, the bet button) rather
-// than spread across every element.
+// Deep purple/gold palette — reverted back from the bright white/sky-blue
+// look to match the actual colors of the web reference app more closely
+// (its real hex values, pulled straight from PoppoLuckyNumber.tsx /
+// LuckyNumberResultBoard.tsx): a near-black indigo page (#2b1649,
+// #1a0f3d, #120928), amber-gold gradient for a selected/bet number
+// (not blue — the reference reserves blue for the reel capsule's
+// border), emerald for the winning number, and a rose-red gradient for
+// the countdown badge. The reel capsule and the number tiles themselves
+// stay glossy white/slate even in the reference's dark theme, so those
+// two are intentionally NOT dark here either — the "amberIcon" /
+// "amberDeep" split below exists because gold text reads differently
+// against a light tile (needs the dark-brown #451a03) than it does
+// standing alone on the new dark panels (needs the bright #fcd34d).
 const palette = {
-  bg: '#EAF2FB',
-  bgPanel: '#FFFFFF',
-  bgCard: '#F4F8FD',
-  border: '#D7E6F7',
-  borderStrong: '#A9CFEF',
-  cyan: '#38BDF8',
-  cyanDeep: '#0EA5E9',
-  sky: '#60A5FA',
-  skyDeep: '#1D4ED8',
+  bg: '#2B1649',
+  bgPanel: '#1A0F3D',
+  bgCard: '#120928',
+  bgChip: '#23154C',
+  border: 'rgba(147, 51, 234, 0.35)',
+  borderStrong: 'rgba(99, 102, 241, 0.5)',
+  tileBg: '#EEF2FF',
+  tileBorder: 'rgba(148, 163, 184, 0.6)',
+  reelBorder: '#3B82F6',
+  reelBorderDeep: '#1D4ED8',
   amber: '#F59E0B',
   amberBright: '#FCD34D',
-  amberDeep: '#B45309',
-  textPrimary: '#1E293B',
-  textSecondary: '#64748B',
+  amberDeep: '#451A03',
+  amberIcon: '#FCD34D',
+  rose: '#E11D48',
+  roseDeep: '#BE123C',
+  textPrimary: '#FFFFFF',
+  textSecondary: '#C4B5FD',
+  textInactiveTile: '#1E293B',
   slateBevel: '#94A3B8',
+  shadowDark: '#000000',
   emerald: '#10B981',
   emeraldDeep: '#047857',
   danger: '#EF4444',
@@ -275,7 +286,7 @@ export function SumDiceScreen({ navigation }: Props) {
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.content}>
         <View style={styles.header}>
           <Pressable style={styles.iconButton} onPress={() => navigation.goBack()}>
-            <Ionicons name="chevron-back" size={20} color={palette.skyDeep} />
+            <Ionicons name="chevron-back" size={20} color={palette.amberIcon} />
           </Pressable>
           <View style={styles.wordmarkWrap}>
             <Text style={styles.wordmark}>Lucky Number</Text>
@@ -289,7 +300,7 @@ export function SumDiceScreen({ navigation }: Props) {
               )
             }
           >
-            <Ionicons name="help-outline" size={20} color={palette.skyDeep} />
+            <Ionicons name="help-outline" size={20} color={palette.amberIcon} />
           </Pressable>
         </View>
 
@@ -317,7 +328,7 @@ export function SumDiceScreen({ navigation }: Props) {
 
         <View style={styles.infoRow}>
           <Pressable style={styles.infoChip} onPress={() => rootNavigation.navigate('HonorRanking')}>
-            <Ionicons name="trophy" size={14} color={palette.amberDeep} />
+            <Ionicons name="trophy" size={14} color={palette.amberIcon} />
           </Pressable>
           {totalPool != null && (
             <View style={styles.poolChip}>
@@ -325,7 +336,7 @@ export function SumDiceScreen({ navigation }: Props) {
               <Text style={styles.poolValue}>{totalPool.toLocaleString()}</Text>
             </View>
           )}
-          <LinearGradient colors={[palette.sky, palette.skyDeep]} style={styles.timerChip}>
+          <LinearGradient colors={[palette.rose, palette.roseDeep]} style={styles.timerChip}>
             <Text style={styles.timerLabel}>
               {isOpen ? 'CLOSES IN' : isDrawing ? 'ROLLING' : isSettled ? 'SETTLED' : 'WAITING'}
             </Text>
@@ -334,7 +345,7 @@ export function SumDiceScreen({ navigation }: Props) {
             </Text>
           </LinearGradient>
           <Pressable style={styles.infoChip} onPress={() => setIsHistoryOpen(true)}>
-            <Ionicons name="time-outline" size={14} color={palette.amberDeep} />
+            <Ionicons name="time-outline" size={14} color={palette.amberIcon} />
           </Pressable>
         </View>
 
@@ -351,7 +362,7 @@ export function SumDiceScreen({ navigation }: Props) {
             return (
               <PressableScale key={key} onPress={() => applyShortcut(numbers)} style={styles.shortcutButtonWrap}>
                 {isActive ? (
-                  <LinearGradient colors={[palette.sky, palette.skyDeep]} style={styles.shortcutButton}>
+                  <LinearGradient colors={[palette.amberBright, palette.amber]} style={styles.shortcutButton}>
                     <Text style={styles.shortcutTextActive}>{key}</Text>
                   </LinearGradient>
                 ) : (
@@ -375,11 +386,12 @@ export function SumDiceScreen({ navigation }: Props) {
             const isWinner = isSettled && allReelsLocked && drawnDice && drawnDice[0] + drawnDice[1] + drawnDice[2] === n;
             const poolAmount = poolQuery.data?.applicable ? poolQuery.data.pool[n] : undefined;
             const barRatio = poolAmount ? Math.min(1, poolAmount / maxPoolValue) : 0;
+            const textStyle = isWinner ? styles.numberTextOnColor : isSelected ? styles.numberTextOnGold : styles.numberText;
             const content = (
               <>
                 <View style={styles.numberShine} />
-                <Text style={[styles.numberText, (isSelected || isWinner) && styles.numberTextOnColor]}>{n}</Text>
-                {!!poolAmount && <Text style={[styles.poolAmountText, (isSelected || isWinner) && styles.numberTextOnColor]}>{poolAmount}</Text>}
+                <Text style={[styles.numberText, textStyle]}>{n}</Text>
+                {!!poolAmount && <Text style={[styles.poolAmountText, textStyle]}>{poolAmount}</Text>}
                 {!!poolAmount && (
                   <View style={styles.miniTrack}>
                     <View style={[styles.miniFill, { width: `${barRatio * 100}%` }]} />
@@ -390,7 +402,7 @@ export function SumDiceScreen({ navigation }: Props) {
             return (
               <Pressable key={n} disabled={!isOpen} onPress={() => toggleNumber(n)} style={styles.numberWrap}>
                 {isSelected ? (
-                  <LinearGradient colors={[palette.sky, palette.skyDeep]} style={styles.number}>
+                  <LinearGradient colors={[palette.amberBright, palette.amber]} style={styles.number}>
                     {content}
                   </LinearGradient>
                 ) : isWinner ? (
@@ -408,7 +420,7 @@ export function SumDiceScreen({ navigation }: Props) {
 
       <View style={styles.bottomBar}>
         <View style={styles.walletRow}>
-          <Ionicons name="ellipse" size={8} color={palette.amber} />
+          <Ionicons name="ellipse" size={8} color={palette.amberIcon} />
           <Text style={styles.walletCoin}>{walletCoins}</Text>
         </View>
         <View style={styles.betRow}>
@@ -444,7 +456,7 @@ export function SumDiceScreen({ navigation }: Props) {
               </Pressable>
             </View>
             {historyQuery.isLoading ? (
-              <ActivityIndicator color={palette.skyDeep} style={{ marginVertical: spacing.lg }} />
+              <ActivityIndicator color={palette.amberIcon} style={{ marginVertical: spacing.lg }} />
             ) : (historyQuery.data ?? []).filter((r) => r.result?.sum != null).length === 0 ? (
               <Text style={styles.historyEmpty}>No settled rounds yet.</Text>
             ) : (
@@ -480,30 +492,33 @@ const styles = StyleSheet.create({
     width: 36,
     height: 36,
     borderRadius: 18,
-    backgroundColor: palette.bgPanel,
+    backgroundColor: palette.bgChip,
     borderWidth: 1,
     borderColor: palette.border,
     alignItems: 'center',
     justifyContent: 'center',
-    shadowColor: palette.slateBevel,
-    shadowOpacity: 0.3,
+    shadowColor: palette.shadowDark,
+    shadowOpacity: 0.4,
     shadowOffset: { width: 0, height: 2 },
     shadowRadius: 3,
     elevation: 2,
   },
   wordmarkWrap: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   wordmark: { color: palette.textPrimary, fontSize: 17, fontWeight: '800' },
+  // The reel capsule stays glossy white even in this dark theme — same
+  // as the real reference app, which keeps the dice capsule light with a
+  // blue border while everything around it goes deep indigo.
   reelCapsule: {
     alignItems: 'center',
     marginTop: spacing.lg,
-    backgroundColor: palette.bgPanel,
+    backgroundColor: palette.tileBg,
     borderRadius: 20,
     borderWidth: 2,
-    borderColor: palette.cyan,
+    borderColor: palette.reelBorder,
     paddingVertical: 20,
     paddingHorizontal: 12,
-    shadowColor: palette.cyanDeep,
-    shadowOpacity: 0.25,
+    shadowColor: palette.reelBorderDeep,
+    shadowOpacity: 0.35,
     shadowOffset: { width: 0, height: 4 },
     shadowRadius: 10,
     elevation: 6,
@@ -519,18 +534,18 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(255,255,255,0.6)',
   },
   reelRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  reelDivider: { width: 2, height: 34, backgroundColor: palette.border, borderRadius: 1 },
+  reelDivider: { width: 2, height: 34, backgroundColor: palette.tileBorder, borderRadius: 1 },
   reelSlot: {
     width: 56,
     height: 64,
     borderRadius: 12,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: palette.bgCard,
+    backgroundColor: '#FFFFFF',
     borderWidth: 1,
-    borderColor: palette.border,
+    borderColor: palette.tileBorder,
   },
-  reelDigit: { color: palette.skyDeep, fontSize: 30, fontWeight: '900' },
+  reelDigit: { color: palette.reelBorderDeep, fontSize: 30, fontWeight: '900' },
   sumPill: {
     marginTop: 14,
     backgroundColor: palette.amberBright,
@@ -541,13 +556,13 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
   },
   sumPillText: { color: palette.amberDeep, fontWeight: '900', fontSize: 14, letterSpacing: 1 },
-  drawingLabel: { color: palette.skyDeep, fontWeight: '800', letterSpacing: 2, marginTop: 14, fontSize: 12 },
+  drawingLabel: { color: palette.amberBright, fontWeight: '800', letterSpacing: 2, marginTop: 14, fontSize: 12 },
   infoRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: spacing.md },
   infoChip: {
     width: 32,
     height: 32,
     borderRadius: 16,
-    backgroundColor: palette.bgPanel,
+    backgroundColor: palette.bgChip,
     borderWidth: 1,
     borderColor: palette.border,
     alignItems: 'center',
@@ -555,7 +570,7 @@ const styles = StyleSheet.create({
   },
   poolChip: {
     flex: 1,
-    backgroundColor: palette.bgPanel,
+    backgroundColor: palette.bgChip,
     borderWidth: 1,
     borderColor: palette.border,
     borderRadius: 10,
@@ -563,20 +578,24 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
   },
   poolLabel: { color: palette.textSecondary, fontSize: 9, fontWeight: '700', letterSpacing: 1 },
-  poolValue: { color: palette.skyDeep, fontSize: 14, fontWeight: '800', marginTop: 1 },
+  poolValue: { color: palette.amberIcon, fontSize: 14, fontWeight: '800', marginTop: 1 },
   timerChip: { borderRadius: 10, paddingVertical: 6, paddingHorizontal: 12, alignItems: 'flex-end' },
   timerLabel: { color: 'rgba(255,255,255,.85)', fontSize: 9, fontWeight: '700', letterSpacing: 1 },
   timerValue: { color: '#FFF', fontSize: 14, fontWeight: '800', marginTop: 1 },
   streakText: { color: palette.textSecondary, fontSize: 10, fontWeight: '600', letterSpacing: 1, marginTop: spacing.sm },
-  streakValue: { color: palette.skyDeep, fontWeight: '800' },
+  streakValue: { color: palette.amberIcon, fontWeight: '800' },
   shortcutRow: { flexDirection: 'row', gap: 8, marginTop: spacing.sm },
   shortcutButtonWrap: { flex: 1 },
   shortcutButton: { paddingVertical: 10, borderRadius: 10, alignItems: 'center' },
-  shortcutButtonInactive: { backgroundColor: palette.bgPanel, borderWidth: 1, borderColor: palette.border },
+  shortcutButtonInactive: { backgroundColor: palette.bgChip, borderWidth: 1, borderColor: palette.border },
   shortcutText: { color: palette.textSecondary, fontWeight: '800', fontSize: 12, letterSpacing: 1 },
   shortcutTextActive: { color: '#FFF', fontWeight: '900', fontSize: 12, letterSpacing: 1 },
   numberGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: spacing.md },
   numberWrap: { width: '13%', aspectRatio: 0.9 },
+  // Number tiles stay glossy/light in both themes — the reference app's
+  // dark version keeps them white/slate too, reserving amber and emerald
+  // for "selected" and "winner" so those two states still pop against a
+  // light tile instead of blending into the (now dark) page behind them.
   number: {
     flex: 1,
     borderRadius: 12,
@@ -592,12 +611,13 @@ const styles = StyleSheet.create({
     shadowRadius: 0,
     elevation: 3,
   },
-  numberInactive: { backgroundColor: palette.bgPanel },
+  numberInactive: { backgroundColor: palette.tileBg },
   numberWinner: { shadowColor: palette.emeraldDeep, shadowOpacity: 0.6, shadowRadius: 8, elevation: 6 },
   numberShine: { position: 'absolute', top: 0, left: 0, right: 0, height: '35%', backgroundColor: 'rgba(255,255,255,.5)' },
-  numberText: { color: palette.textPrimary, fontSize: 15, fontWeight: '800' },
+  numberText: { color: palette.textInactiveTile, fontSize: 15, fontWeight: '800' },
   numberTextOnColor: { color: '#FFFFFF' },
-  poolAmountText: { color: palette.textSecondary, fontSize: 8, fontWeight: '700', marginTop: 1 },
+  numberTextOnGold: { color: palette.amberDeep },
+  poolAmountText: { color: '#64748B', fontSize: 8, fontWeight: '700', marginTop: 1 },
   miniTrack: { position: 'absolute', bottom: 0, left: 0, right: 0, height: 2, backgroundColor: 'rgba(0,0,0,.08)' },
   miniFill: { height: '100%', backgroundColor: palette.amber },
   bottomBar: {
@@ -610,14 +630,14 @@ const styles = StyleSheet.create({
     borderTopColor: palette.border,
     padding: spacing.md,
     paddingBottom: spacing.lg,
-    shadowColor: palette.slateBevel,
-    shadowOpacity: 0.3,
+    shadowColor: palette.shadowDark,
+    shadowOpacity: 0.4,
     shadowOffset: { width: 0, height: -3 },
     shadowRadius: 8,
     elevation: 10,
   },
   walletRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: spacing.sm },
-  walletCoin: { color: palette.amberDeep, fontWeight: '800', fontSize: 13 },
+  walletCoin: { color: palette.amberIcon, fontWeight: '800', fontSize: 13 },
   betRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   stepButton: {
     width: 40,
@@ -629,7 +649,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  betButtonWrap: { flex: 1, borderRadius: 12, overflow: 'hidden', shadowColor: palette.amberDeep, shadowOpacity: 0.4, shadowOffset: { width: 0, height: 3 }, shadowRadius: 8, elevation: 6 },
+  betButtonWrap: { flex: 1, borderRadius: 12, overflow: 'hidden', shadowColor: palette.amber, shadowOpacity: 0.5, shadowOffset: { width: 0, height: 3 }, shadowRadius: 8, elevation: 6 },
   betButton: { height: 48, alignItems: 'center', justifyContent: 'center', overflow: 'hidden' },
   betButtonShine: { position: 'absolute', top: 0, left: 0, right: 0, height: '50%', backgroundColor: 'rgba(255,255,255,.3)' },
   betButtonText: { color: palette.amberDeep, fontWeight: '900', fontSize: 14, letterSpacing: 1 },
@@ -644,5 +664,5 @@ const styles = StyleSheet.create({
   historyTime: { color: palette.textSecondary, fontSize: 11, flex: 1 },
   historySum: { color: palette.textPrimary, fontWeight: '800', width: 30, textAlign: 'center' },
   historyClass: { color: palette.textSecondary, fontSize: 11, width: 40, textAlign: 'center' },
-  historyPrize: { color: palette.amberDeep, fontWeight: '800', width: 50, textAlign: 'right' },
+  historyPrize: { color: palette.amberIcon, fontWeight: '800', width: 50, textAlign: 'right' },
 });

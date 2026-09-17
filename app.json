@@ -34,9 +34,7 @@
     },
     "plugins": [
       "expo-dev-client",
-      "expo-secure-store",
-      "expo-status-bar",
-      "expo-audio"
+      "expo-secure-store"
     ],
     "extra": {
       "apiBaseUrl": "http://192.168.18.4:3000/api/v1",

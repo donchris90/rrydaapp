@@ -12,7 +12,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
-import { useNavigation } from '@react-navigation/native';
+import { useNavigation, useRoute, type RouteProp } from '@react-navigation/native';
 import type { CompositeNavigationProp } from '@react-navigation/native';
 import type { BottomTabNavigationProp } from '@react-navigation/bottom-tabs';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -100,9 +100,11 @@ function AnimatedChatLine({
 export function GoLiveScreen() {
   const { user } = useAuth();
   const navigation = useNavigation<GoLiveNav>();
+  const route = useRoute<RouteProp<MainTabParamList, 'GoLive'>>();
   const insets = useSafeAreaInsets();
   const queryClient = useQueryClient();
-  const [title, setTitle] = useState('');
+  const [title, setTitle] = useState(route.params?.initialTitle ?? '');
+  const [themeColor] = useState(route.params?.initialThemeColor);
   const [category, setCategory] = useState('Chatting');
   const [session, setSession] = useState<LiveSessionRaw | null>(null);
   const [token, setToken] = useState<string | null>(null);
@@ -204,7 +206,7 @@ export function GoLiveScreen() {
   }, [opponentSessionId]);
 
   const startMutation = useMutation({
-    mutationFn: () => createLiveSession({ title: title.trim(), category }),
+    mutationFn: () => createLiveSession({ title: title.trim(), category, themeColor }),
     onSuccess: ({ session: newSession, token: newToken }) => {
       setSession(newSession);
       setToken(newToken);
