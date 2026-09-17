@@ -29,12 +29,20 @@ export function setOnAuthFailure(cb: () => void): void {
 }
 
 export const apiClient = axios.create({ baseURL: API_BASE_URL });
+console.log('[API] BASE URL:', API_BASE_URL);
 
 apiClient.interceptors.request.use((config) => {
+  console.log(
+    '[API REQUEST]',
+    config.method?.toUpperCase(),
+    `${config.baseURL ?? ''}${config.url ?? ''}`,
+  );
+
   if (accessToken) {
     config.headers = config.headers ?? {};
     (config.headers as Record<string, string>).Authorization = `Bearer ${accessToken}`;
   }
+
   return config;
 });
 
