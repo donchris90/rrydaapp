@@ -6,7 +6,7 @@ import Constants from 'expo-constants';
 // backend server (running on your PC) are two different devices on the
 // network — "localhost" from the phone's perspective means the phone
 // itself, never your PC. Must be your PC's LAN IP instead.
-const extra = Constants.expoConfig?.extra as { apiBaseUrl?: string; agoraAppId?: string; imgbbApiKey?: string } | undefined;
+const extra = Constants.expoConfig?.extra as { apiBaseUrl?: string; agoraAppId?: string } | undefined;
 
 export const API_BASE_URL = extra?.apiBaseUrl ?? 'http://localhost:3000/api/v1';
 
@@ -22,13 +22,3 @@ export const SOCKET_BASE_URL = API_BASE_URL.replace(/\/api\/v1\/?$/, '');
 // tokens (see the backend's AgoraRtcProvider). The App ID alone can't
 // authenticate a join; a valid token from the backend is still required.
 export const AGORA_APP_ID = extra?.agoraAppId ?? '';
-
-// ImgBB's free API is meant for exactly this kind of client-side use —
-// unlike Agora's App Certificate, there's no server-side secret this key
-// could substitute for. Worth being upfront about the real tradeoff
-// anyway: any key bundled into a mobile app is extractable by someone
-// who decompiles the APK, so this key isn't truly secret once shipped.
-// For a free image host with no billing or sensitive scope attached to
-// it, that's a reasonable, common tradeoff — not one to make silently,
-// though, which is why it's called out here rather than just used.
-export const IMGBB_API_KEY = extra?.imgbbApiKey ?? '';

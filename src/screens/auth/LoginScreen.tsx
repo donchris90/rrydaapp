@@ -1,3 +1,4 @@
+import { describeApiError } from '../../api/errors';
 import React, { useState } from 'react';
 import { KeyboardAvoidingView, Platform, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
@@ -32,7 +33,7 @@ export function LoginScreen({ navigation }: Props) {
       // Backend returns a constant-shape 401 whether the email exists or
       // not (see auth.service.ts) — deliberately don't try to distinguish
       // "wrong password" from "no such account" here either.
-      setError(e?.response?.data?.message ?? 'Invalid email or password');
+      setError(describeApiError(e, 'Invalid email or password'));
     } finally {
       setIsSubmitting(false);
     }

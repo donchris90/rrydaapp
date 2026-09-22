@@ -1,3 +1,4 @@
+import { describeApiError } from '../../api/errors';
 import React, { useState } from 'react';
 import { KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
@@ -44,7 +45,7 @@ export function RegisterScreen({ navigation }: Props) {
         referralCode: referralCode.trim() || undefined,
       });
     } catch (e: any) {
-      setError(e?.response?.data?.message ?? 'Registration failed');
+      setError(describeApiError(e, 'Registration failed'));
     } finally {
       setIsSubmitting(false);
     }

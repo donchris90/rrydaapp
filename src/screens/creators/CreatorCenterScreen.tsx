@@ -1,166 +1,67 @@
-import React, { useState } from 'react';
-import { ActivityIndicator, Alert, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import React, { useMemo, useState } from 'react';
+import { ActivityIndicator, Alert, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { useNavigation } from '@react-navigation/native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import * as Crypto from 'expo-crypto';
-import { applyToBeCreator, fetchCreatorDashboard, requestWithdrawal } from '../../api/creators';
+import { useNavigation, useRoute } from '@react-navigation/native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { applyToBeCreator, fetchCreatorDashboard, fetchCreatorLeaderboard, requestWithdrawal, type CreatorPeriod } from '../../api/creators';
+import { challengePk } from '../../api/pk';
+import { claimMission, fetchMissions, type Mission } from '../../api/missions';
 import { useAuth } from '../../auth/AuthContext';
-import { GradientBackground } from '../../components/GradientBackground';
+import { useTheme } from '../../context/ThemeContext';
 import { GradientButton } from '../../components/GradientButton';
-import { FadeInUp } from '../../components/FadeInUp';
-import { colors, radii, spacing, type } from '../../theme';
+import { WithdrawPanel } from '../../components/WithdrawPanel';
+import { PayoutHistoryList } from '../../components/PayoutHistoryList';
 
-// Real, but genuinely partial — see creators.controller.ts's own comment
-// on dashboard(): live hours, viewers, followers-gained, and gift
-// breakdown aren't built yet, only the withdrawable balance is. And per
-// withdrawal.service.ts, KYC/payout-account integration isn't built
-// either — a withdrawal request here is really recorded and reserved
-// against real balance, but there's no real payment rail connected to
-// actually pay it out yet. Both limitations are shown in the UI rather
-// than left implicit.
-export function CreatorCenterScreen() {
-  const navigation = useNavigation();
-  const insets = useSafeAreaInsets();
-  const { user } = useAuth();
-  const queryClient = useQueryClient();
-  const [withdrawAmount, setWithdrawAmount] = useState('');
+type Tab = 'streamer' | 'creator' | 'agency';
 
-  const isCreator = user?.roles?.some((r) => r.role === 'CREATOR') ?? false;
+const tabs: { id: Tab; label: string; icon: keyof typeof Ionicons.glyphMap }[] = [
+  { id: 'streamer', label: 'Streamer Center', icon: 'radio-outline' },
+  { id: 'creator', label: 'Video Creator', icon: 'videocam-outline' },
+  { id: 'agency', label: 'Agency', icon: 'shield-checkmark-outline' },
+];
 
-  const dashboardQuery = useQuery({
-    queryKey: ['creators', 'dashboard'],
-    queryFn: fetchCreatorDashboard,
-    enabled: isCreator,
-  });
+function Card({children, style}:{children:React.ReactNode;style?:any}) { const {palette}=useTheme(); return <View style={[s.card,{backgroundColor:palette.surface,borderColor:palette.border},style]}>{children}</View>; }
+function Row({icon,title,sub,onPress,badge}:{icon:keyof typeof Ionicons.glyphMap;title:string;sub?:string;onPress?:()=>void;badge?:string}) { const {palette}=useTheme(); const C=onPress?Pressable:View; return <C onPress={onPress} style={s.row}><View style={[s.rowIcon,{backgroundColor:palette.surfaceRaised}]}><Ionicons name={icon} size={18} color={palette.violet}/></View><View style={{flex:1}}><Text style={[s.rowTitle,{color:palette.textPrimary}]}>{title}</Text>{sub&&<Text style={[s.rowSub,{color:palette.textMuted}]}>{sub}</Text>}</View>{badge&&<Text style={[s.badge,{color:palette.violet}]}>{badge}</Text>}{onPress&&<Ionicons name="chevron-forward" size={16} color={palette.textMuted}/>}</C>; }
+function Metric({label,value,icon}:{label:string;value:string;icon:keyof typeof Ionicons.glyphMap}) { const {palette}=useTheme(); return <View style={[s.metric,{backgroundColor:palette.surfaceRaised}]}><Ionicons name={icon} size={17} color={palette.violet}/><Text style={[s.metricValue,{color:palette.textPrimary}]}>{value}</Text><Text style={[s.metricLabel,{color:palette.textMuted}]}>{label}</Text></View>; }
 
-  const applyMutation = useMutation({
-    mutationFn: applyToBeCreator,
-    onSuccess: (application) => {
-      Alert.alert('Application submitted', `Status: ${application.status}. You'll be able to withdraw earnings once approved.`);
-    },
-    onError: (error: any) => {
-      Alert.alert('Could not apply', error?.response?.data?.message ?? 'Something went wrong. Try again.');
-    },
-  });
+const PERIODS:{id:CreatorPeriod;label:string;long:string}[]=[{id:'today',label:'24h',long:'Last 24 hours'},{id:'week',label:'7 days',long:'Last 7 days'},{id:'month',label:'30 days',long:'Last 30 days'}];
+const fmtNum=(n:number|string)=>Number(n).toLocaleString('en-US');
+const missionUnit=(m:Mission)=>m.metric==='LIVE_MINUTES'?'min':m.metric==='PK_WINS'?(m.target===1?'win':'wins'):m.metric==='GIFT_COINS_RECEIVED'?'coins':'fans';
+const fmtResets=(iso:string)=>{const ms=new Date(iso).getTime()-Date.now();const h=Math.max(0,Math.floor(ms/3600000));const m=Math.max(0,Math.floor((ms%3600000)/60000));return h>0?`${h}h ${m}m`:`${m}m`};
+const fmtDuration=(sec:number)=>{const h=Math.floor(sec/3600);const m=Math.floor((sec%3600)/60);return h>0?`${h}h ${m}m`:`${m}m`};
 
-  const withdrawMutation = useMutation({
-    mutationFn: (amountCoins: number) => requestWithdrawal(amountCoins, 'NGN', Crypto.randomUUID()),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['creators', 'dashboard'] });
-      setWithdrawAmount('');
-      Alert.alert('Withdrawal requested', 'Your request has been recorded and the amount reserved from your earnings.');
-    },
-    onError: (error: any) => {
-      Alert.alert('Could not withdraw', error?.response?.data?.message ?? 'Something went wrong. Try again.');
-    },
-  });
+export function CreatorCenterScreen(){
+ const navigation=useNavigation(); const route=useRoute<any>(); const insets=useSafeAreaInsets(); const {user}=useAuth(); const {palette,isMidnight}=useTheme();
+ const [tab,setTab]=useState<Tab>((route.params?.defaultTab??'streamer') as Tab);
+ const [period,setPeriod]=useState<CreatorPeriod>('today'); const isCreator=user?.roles?.some(r=>r.role==='CREATOR')??false; const dashboardQuery=useQuery({queryKey:['creators','dashboard',period],queryFn:()=>fetchCreatorDashboard(period),enabled:isCreator}); const leaderboardQuery=useQuery({queryKey:['creators','leaderboard',period],queryFn:()=>fetchCreatorLeaderboard(period)}); const qc=useQueryClient();
+ const missionsQuery=useQuery({queryKey:['missions','today'],queryFn:fetchMissions,enabled:isCreator,refetchInterval:60000}); const claimMutation=useMutation({mutationFn:(id:string)=>claimMission(id),onSuccess:(r)=>{qc.invalidateQueries({queryKey:['missions']});qc.invalidateQueries({queryKey:['wallet']});Alert.alert('Reward claimed',`${r.rewardCoins.toLocaleString('en-US')} bonus coins added to your bonus balance.`)},onError:(e:any)=>Alert.alert('Could not claim',e?.response?.data?.message??'Please try again.')});
+ const challengeMutation=useMutation({mutationFn:(opponentId:string)=>challengePk(opponentId),onSuccess:()=>Alert.alert('Challenge sent','They can accept it from their PK panel.'),onError:(e:any)=>Alert.alert('Could not send challenge',e?.response?.data?.message??'Please try again.')});
+ const applyMutation=useMutation({mutationFn:applyToBeCreator,onSuccess:()=>Alert.alert('Application submitted','Your creator application has been submitted.'),onError:(e:any)=>Alert.alert('Could not apply',e?.response?.data?.message??'Please try again.')});
+ const balance=dashboardQuery.data?.withdrawableBalance??'0';
+ const dash=dashboardQuery.data; const dv=(v:string|number|undefined)=>dash?String(v):'—'; const leaderboard=leaderboardQuery.data??[]; const periodLabel=PERIODS.find(p=>p.id===period)?.long??'';
+ return <View style={[s.fill,{backgroundColor:palette.background,paddingTop:insets.top}]}>
+  <View style={[s.header,{backgroundColor:palette.surface,borderBottomColor:palette.border}]}><Pressable onPress={()=>navigation.goBack()}><Ionicons name="arrow-back" size={23} color={palette.textPrimary}/></Pressable><View style={{flex:1,marginLeft:12}}><Text style={[s.title,{color:palette.textPrimary}]}>Creator Center</Text><Text style={[s.subtitle,{color:palette.textMuted}]}>Earnings, missions and payouts</Text></View><Ionicons name="sparkles" size={19} color={palette.violet}/></View>
+  <ScrollView horizontal showsHorizontalScrollIndicator={false} style={[s.tabBar,{backgroundColor:palette.surface,borderBottomColor:palette.border}]} contentContainerStyle={{paddingHorizontal:8}}>{tabs.map(t=><Pressable key={t.id} onPress={()=>setTab(t.id)} style={[s.tab,tab===t.id&&{borderBottomColor:palette.violet}]}><Ionicons name={t.icon} size={14} color={tab===t.id?palette.violet:palette.textMuted}/><Text style={[s.tabText,{color:tab===t.id?palette.violet:palette.textMuted}]}>{t.label}</Text></Pressable>)}</ScrollView>
+  <ScrollView contentContainerStyle={{padding:14,paddingBottom:insets.bottom+35,gap:12}}>
+   {tab==='streamer'&&<>
+    <Card><View style={s.sectionRow}><Text style={[s.section,{color:palette.textPrimary}]}>Host Earnings & Performance</Text><Text style={[s.small,{color:palette.violet}]}>{periodLabel}</Text></View><View style={s.chips}>{PERIODS.map(p=><Pressable key={p.id} onPress={()=>setPeriod(p.id)} style={[s.chip,period===p.id&&s.chipActive]}><Text style={period===p.id?s.chipActiveText:s.chipText}>{p.label}</Text></Pressable>)}</View>{!isCreator?<Text style={[s.body,{color:palette.textSecondary}]}>Become an approved creator to see your earnings and performance here.</Text>:dashboardQuery.isLoading?<ActivityIndicator color={palette.violet}/>:dashboardQuery.isError?<Text style={[s.body,{color:palette.textSecondary}]}>Could not load your stats. Pull back and try again.</Text>:<><View style={s.metrics}><Metric label="Your earnings (coins)" value={dv(dash&&fmtNum(dash.earnings.creatorCoins))} icon="diamond-outline"/><Metric label="Gifts received" value={dv(dash&&fmtNum(dash.gifts.count))} icon="gift-outline"/><Metric label="Gift value (coins)" value={dv(dash&&fmtNum(dash.gifts.coins))} icon="sparkles-outline"/></View><View style={s.metrics}><Metric label="Live time" value={dv(dash&&fmtDuration(dash.live.seconds))} icon="time-outline"/><Metric label="Followers gained" value={dv(dash&&`+${fmtNum(dash.followers.gained)}`)} icon="people-outline"/><Metric label="PK record (W-L-D)" value={dv(dash&&`${dash.pk.wins}-${dash.pk.losses}-${dash.pk.draws}`)} icon="flash-outline"/></View><View style={s.earnLine}><Text style={[s.small,{color:palette.textMuted}]}>Earnings are your share of gifts after the platform and agency split.</Text></View>{dash&&dash.gifts.topGifters.length>0&&<><Text style={[s.small,{color:palette.textMuted,marginTop:4}]}>Top gifters</Text>{dash.gifts.topGifters.map(g=><Row key={g.userId} icon="heart-outline" title={g.displayName??'Anonymous'} badge={`${fmtNum(g.coins)} coins`}/>)}</>}</>}</Card>
+    <Card><Text style={[s.section,{color:palette.textPrimary}]}>Live days this month</Text>{!isCreator?<Text style={[s.body,{color:palette.textSecondary}]}>Become an approved creator to track your live days.</Text>:dashboardQuery.isLoading?<ActivityIndicator color={palette.violet}/>:dash?<View style={s.quota}><Text style={[s.heroNumber,{color:palette.textPrimary}]}>{dash.validDays.count}</Text><Text style={[s.small,{color:palette.textMuted}]}>days with {dash.validDays.thresholdMinutes}+ minutes live in {dash.validDays.month}</Text></View>:<Text style={[s.body,{color:palette.textSecondary}]}>Could not load your live days.</Text>}</Card>
+    <Card><View style={s.sectionRow}><Text style={[s.section,{color:palette.textPrimary}]}>Global Talent Leaderboard</Text><Text style={[s.small,{color:palette.violet}]}>{periodLabel}</Text></View>{leaderboardQuery.isLoading?<ActivityIndicator color={palette.violet}/>:leaderboardQuery.isError?<Text style={[s.body,{color:palette.textSecondary}]}>Could not load the leaderboard.</Text>:leaderboard.length===0?<Text style={[s.body,{color:palette.textSecondary}]}>No gifts have been sent in this period yet.</Text>:leaderboard.map(x=><View key={x.userId} style={s.leader}><Text style={s.rank}>{x.rank}</Text><View style={{flex:1}}><Text style={[s.rowTitle,{color:palette.textPrimary}]}>{x.displayName??'Unnamed'}{x.isMe?' (you)':''}</Text><Text style={[s.rowSub,{color:palette.textMuted}]}>{fmtNum(x.followers)} fans • {x.pkWins} PK wins</Text></View><Text style={[s.leaderValue,{color:palette.textPrimary}]}>{fmtNum(x.giftCoins)}</Text>{!x.isMe&&<Pressable style={s.challenge} disabled={challengeMutation.isPending} onPress={()=>Alert.alert('PK Challenge',`Challenge ${x.displayName??'this creator'} to a PK battle?`,[{text:'Cancel',style:'cancel'},{text:'Challenge',onPress:()=>challengeMutation.mutate(x.userId)}])}><Ionicons name="flash" size={13} color="#fff"/></Pressable>}</View>)}</Card>
+    <Card><View style={s.sectionRow}><Text style={[s.section,{color:palette.textPrimary}]}>Daily Streamer Tasks & Rewards</Text><Ionicons name="flame" size={18} color="#FF8A00"/></View>{!isCreator?<Text style={[s.body,{color:palette.textSecondary}]}>Become an approved creator to earn daily rewards.</Text>:missionsQuery.isLoading?<ActivityIndicator color={palette.violet}/>:missionsQuery.isError||!missionsQuery.data?<Text style={[s.body,{color:palette.textSecondary}]}>Could not load today's tasks.</Text>:<><Text style={[s.small,{color:palette.textMuted}]}>Resets in {fmtResets(missionsQuery.data.period.resetsAt)} • Bonus balance: {fmtNum(missionsQuery.data.bonusBalance)} coins</Text>{missionsQuery.data.missions.map((m,i)=>{const pct=Math.min(100,Math.round(m.progress/m.target*100));return <View key={m.id} style={s.task}><View style={s.taskCircle}><Text style={s.taskNo}>{i+1}</Text></View><View style={{flex:1}}><Text style={[s.rowTitle,{color:palette.textPrimary}]}>{m.title}</Text><Text style={[s.rowSub,{color:palette.textMuted}]}>{m.description}</Text><View style={s.progress}><View style={[s.progressFill,{width:`${pct}%` as `${number}%`}]}/></View><Text style={[s.rowSub,{color:palette.textMuted}]}>{fmtNum(Math.min(m.progress,m.target))} / {fmtNum(m.target)} {missionUnit(m)} • +{fmtNum(m.rewardCoins)} bonus coins</Text></View>{m.claimed?<Text style={[s.claim,{color:'#10B981'}]}>Claimed</Text>:m.claimable?<Pressable disabled={claimMutation.isPending} onPress={()=>claimMutation.mutate(m.id)}><Text style={s.claim}>Claim</Text></Pressable>:<Text style={[s.rowSub,{color:palette.textMuted}]}>{pct}%</Text>}</View>})}</>}</Card>
+    <Card><Text style={[s.section,{color:palette.textPrimary}]}>Request payout</Text><WithdrawPanel walletType="CREATOR_EARNINGS" balanceCoins={balance}/></Card>
+    <Card><Text style={[s.section,{color:palette.textPrimary}]}>Payout history</Text><PayoutHistoryList walletType="CREATOR_EARNINGS"/></Card>
+   </>}
+   {tab==='creator'&&<>
+    <Card><Text style={[s.section,{color:palette.textPrimary}]}>Video Creator Center</Text><Text style={[s.body,{color:palette.textSecondary}]}>Upload videos, edit their details and see how they are doing.</Text><GradientButton label="Open Video Creator Center" onPress={()=>(navigation as any).navigate('VideoCreatorCenter')}/></Card>
+   </>}
+   {tab==='agency'&&<>
+    <Card><Text style={[s.section,{color:palette.textPrimary}]}>Agency</Text><Text style={[s.body,{color:palette.textSecondary}]}>Your agency membership, commission earnings and agency payouts live in My Agency.</Text><GradientButton label="Open My Agency" onPress={()=>(navigation as any).navigate('Agency')}/></Card>
+   </>}
+  </ScrollView>
 
-  return (
-    <GradientBackground style={{ paddingTop: insets.top }}>
-      <View style={styles.header}>
-        <Pressable onPress={() => navigation.goBack()} hitSlop={12} style={styles.backButton}>
-          <Ionicons name="arrow-back" size={22} color={colors.textPrimary} />
-        </Pressable>
-        <Text style={styles.title}>Streamer Center</Text>
-      </View>
-
-      {!isCreator ? (
-        <FadeInUp index={0} style={styles.card}>
-          <Ionicons name="tv-outline" size={32} color={colors.textMuted} />
-          <Text style={styles.emptyTitle}>Become a creator</Text>
-          <Text style={styles.emptyBody}>
-            Apply to unlock creator earnings and withdrawals. An admin reviews applications — approval isn't instant.
-          </Text>
-          <View style={{ marginTop: spacing.md, width: '100%' }}>
-            <GradientButton
-              label={applyMutation.isPending ? 'Applying...' : 'Apply now'}
-              onPress={() => applyMutation.mutate()}
-              loading={applyMutation.isPending}
-            />
-          </View>
-        </FadeInUp>
-      ) : dashboardQuery.isLoading ? (
-        <ActivityIndicator color={colors.primary} style={{ marginTop: spacing.xl }} />
-      ) : (
-        <>
-          <FadeInUp index={0} style={styles.card}>
-            <Text style={styles.label}>Withdrawable balance</Text>
-            <Text style={styles.balance}>{dashboardQuery.data?.withdrawableBalance ?? '0'} coins</Text>
-            <Text style={styles.note}>
-              Live hours, viewers, and gift-breakdown analytics aren't tracked yet — this balance is the one real number available today.
-            </Text>
-          </FadeInUp>
-
-          <FadeInUp index={1} style={styles.card}>
-            <Text style={styles.label}>Request a withdrawal</Text>
-            <TextInput
-              style={styles.input}
-              value={withdrawAmount}
-              onChangeText={setWithdrawAmount}
-              placeholder="Amount in coins"
-              placeholderTextColor={colors.textMuted}
-              keyboardType="number-pad"
-            />
-            <Text style={styles.note}>
-              This reserves the amount against your balance and records a real request — payout processing (bank transfer, KYC
-              verification) isn't connected to a real payment method yet, so nothing is actually paid out automatically.
-            </Text>
-            <View style={{ marginTop: spacing.sm }}>
-              <GradientButton
-                label={withdrawMutation.isPending ? 'Requesting...' : 'Request withdrawal'}
-                onPress={() => {
-                  const amount = parseInt(withdrawAmount, 10);
-                  if (!amount || amount <= 0) {
-                    Alert.alert('Enter an amount', 'Type how many coins you want to withdraw first.');
-                    return;
-                  }
-                  withdrawMutation.mutate(amount);
-                }}
-                loading={withdrawMutation.isPending}
-              />
-            </View>
-          </FadeInUp>
-        </>
-      )}
-    </GradientBackground>
-  );
+ </View>
 }
 
-const styles = StyleSheet.create({
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.sm,
-    paddingHorizontal: spacing.md,
-    paddingBottom: spacing.sm,
-  },
-  backButton: { padding: spacing.xs },
-  title: { ...type.h2, color: colors.textPrimary },
-  card: {
-    marginHorizontal: spacing.md,
-    marginTop: spacing.md,
-    backgroundColor: colors.surface,
-    borderRadius: radii.lg,
-    borderWidth: 1,
-    borderColor: colors.borderLight,
-    padding: spacing.lg,
-    alignItems: 'center',
-  },
-  emptyTitle: { ...type.h2, color: colors.textPrimary, marginTop: spacing.sm, textAlign: 'center' },
-  emptyBody: { ...type.body, color: colors.textSecondary, marginTop: spacing.xs, textAlign: 'center' },
-  label: { ...type.caption, color: colors.textSecondary, alignSelf: 'flex-start', fontWeight: '700' },
-  balance: { ...type.h1, color: colors.gold, alignSelf: 'flex-start', marginTop: spacing.xs },
-  note: { ...type.caption, color: colors.textMuted, marginTop: spacing.sm, alignSelf: 'flex-start' },
-  input: {
-    width: '100%',
-    backgroundColor: colors.surfaceRaised,
-    borderRadius: radii.md,
-    borderWidth: 1,
-    borderColor: colors.borderLight,
-    padding: spacing.md,
-    color: colors.textPrimary,
-    marginTop: spacing.sm,
-  },
-});
+const s=StyleSheet.create({fill:{flex:1},header:{height:58,paddingHorizontal:14,flexDirection:'row',alignItems:'center',borderBottomWidth:1},title:{fontSize:16,fontWeight:'900'},subtitle:{fontSize:10,marginTop:2},tabBar:{maxHeight:52,borderBottomWidth:1},tab:{paddingHorizontal:12,paddingVertical:14,flexDirection:'row',alignItems:'center',gap:5,borderBottomWidth:2,borderBottomColor:'transparent'},tabText:{fontSize:10,fontWeight:'900'},card:{borderWidth:1,borderRadius:20,padding:14,gap:10},hostHero:{padding:15,borderRadius:20,flexDirection:'row',gap:12},star:{width:48,height:48,borderRadius:16,backgroundColor:'#7B42F6',alignItems:'center',justifyContent:'center'},heroTitle:{fontSize:16,fontWeight:'900'},body:{fontSize:11,lineHeight:17},small:{fontSize:9,lineHeight:14},progress:{height:7,borderRadius:8,backgroundColor:'rgba(127,127,127,.18)',overflow:'hidden',marginVertical:7},progressFill:{height:'100%',borderRadius:8,backgroundColor:'#7B42F6'},section:{fontSize:14,fontWeight:'900'},sectionRow:{flexDirection:'row',alignItems:'center',justifyContent:'space-between'},metrics:{flexDirection:'row',gap:8},metric:{flex:1,borderRadius:15,padding:10,alignItems:'center',gap:4},metricValue:{fontSize:15,fontWeight:'900'},metricLabel:{fontSize:8,fontWeight:'700',textAlign:'center'},earnLine:{flexDirection:'row',justifyContent:'space-between',marginTop:2},quota:{alignItems:'center',paddingVertical:5},heroNumber:{fontSize:25,fontWeight:'900'},row:{flexDirection:'row',alignItems:'center',gap:10,paddingVertical:10},rowIcon:{width:36,height:36,borderRadius:12,alignItems:'center',justifyContent:'center'},rowTitle:{fontSize:11,fontWeight:'800'},rowSub:{fontSize:9,marginTop:2},badge:{fontSize:9,fontWeight:'900',marginRight:3},leader:{flexDirection:'row',alignItems:'center',gap:8,paddingVertical:9,borderBottomWidth:1,borderBottomColor:'rgba(127,127,127,.1)'},rank:{width:24,textAlign:'center',fontSize:12,fontWeight:'900'},leaderValue:{fontSize:10,fontWeight:'900',minWidth:55,textAlign:'right'},challenge:{width:28,height:28,borderRadius:14,backgroundColor:'#7B42F6',alignItems:'center',justifyContent:'center'},task:{flexDirection:'row',alignItems:'center',gap:8,paddingVertical:9,borderBottomWidth:1,borderBottomColor:'rgba(127,127,127,.1)'},taskCircle:{width:28,height:28,borderRadius:14,backgroundColor:'#F5EDFF',alignItems:'center',justifyContent:'center'},taskNo:{fontSize:10,fontWeight:'900',color:'#7B42F6'},reward:{fontSize:9,fontWeight:'800',marginRight:4},claim:{fontSize:9,fontWeight:'900',color:'#7B42F6'},input:{borderWidth:1,borderRadius:12,paddingHorizontal:12,paddingVertical:10,fontSize:12},creatorHero:{padding:15,borderRadius:20,flexDirection:'row',alignItems:'center'},addBtn:{backgroundColor:'#FF2E7E',borderRadius:12,paddingHorizontal:10,paddingVertical:8,flexDirection:'row',alignItems:'center',gap:4},addText:{fontSize:10,fontWeight:'900',color:'#fff'},videoRow:{flexDirection:'row',alignItems:'center',gap:10,paddingVertical:9,borderBottomWidth:1,borderBottomColor:'rgba(127,127,127,.1)'},videoThumb:{width:52,height:66,borderRadius:10,backgroundColor:'#7B42F6',alignItems:'center',justifyContent:'center'},editBtn:{flexDirection:'row',alignItems:'center',gap:4},editText:{fontSize:10,fontWeight:'800'},switchRow:{flexDirection:'row',alignItems:'center',justifyContent:'space-between',paddingVertical:9},chips:{flexDirection:'row',flexWrap:'wrap',gap:7,marginTop:7},chip:{paddingHorizontal:12,paddingVertical:7,borderRadius:999,backgroundColor:'#F2F0F7'},chipActive:{backgroundColor:'#7B42F6'},chipText:{fontSize:10,fontWeight:'800',color:'#6B6678'},chipActiveText:{fontSize:10,fontWeight:'800',color:'#fff'},agencyHero:{padding:14,borderRadius:20,flexDirection:'row',alignItems:'center',gap:12},agencyIcon:{width:46,height:46,borderRadius:15,backgroundColor:'#7B42F6',alignItems:'center',justifyContent:'center'},modalShade:{flex:1,backgroundColor:'rgba(0,0,0,.55)',justifyContent:'flex-end'},modal:{borderTopLeftRadius:26,borderTopRightRadius:26,padding:18,gap:13},modalHeader:{flexDirection:'row',alignItems:'center',justifyContent:'space-between'},modalTitle:{fontSize:17,fontWeight:'900'},secondaryBtn:{borderWidth:1,borderColor:'#7B42F6',borderRadius:14,padding:13,alignItems:'center',justifyContent:'center',flexDirection:'row',gap:8},secondaryText:{fontSize:11,fontWeight:'900'},save:{fontSize:12,fontWeight:'900'},editorTabs:{maxHeight:48,borderBottomWidth:1,borderBottomColor:'rgba(127,127,127,.1)'},editorTab:{paddingHorizontal:12,paddingVertical:13,borderBottomWidth:2,borderBottomColor:'transparent'},editorTabText:{fontSize:9,fontWeight:'900'},preview:{height:250,borderRadius:20,alignItems:'center',justifyContent:'center',gap:8},previewText:{fontSize:13,fontWeight:'900',color:'#fff'},previewSub:{fontSize:10,color:'#BEB8CB'},range:{height:10,borderRadius:8,backgroundColor:'#ECE8F1',overflow:'hidden',marginVertical:10},rangeFill:{height:'100%',backgroundColor:'#7B42F6'},filterCard:{width:82,marginRight:8,padding:6,borderRadius:12,borderWidth:1,borderColor:'transparent'},filterActive:{borderColor:'#7B42F6',backgroundColor:'#F5EDFF'},filterThumb:{height:70,borderRadius:9,backgroundColor:'#292332',alignItems:'center',justifyContent:'center'},filterName:{fontSize:9,fontWeight:'800',textAlign:'center',marginTop:5},sliderFake:{height:8,borderRadius:8,backgroundColor:'#E8E4ED',overflow:'hidden',marginVertical:7},sliderFill:{height:'100%',backgroundColor:'#7B42F6'},badgeChip:{paddingHorizontal:9,paddingVertical:7,borderRadius:10,backgroundColor:'#F1EEF7'},badgeChipActive:{backgroundColor:'#7B42F6'},badgeChipText:{fontSize:9,fontWeight:'700',color:'#5C566A'},badgeChipActiveText:{fontSize:9,fontWeight:'700',color:'#fff'},musicRow:{flexDirection:'row',alignItems:'center',gap:8,paddingVertical:9,borderWidth:1,borderColor:'transparent',borderRadius:10,paddingHorizontal:8},ratio:{flexDirection:'row',alignItems:'center',gap:12,padding:11,borderWidth:1,borderColor:'transparent',borderRadius:13},ratioActive:{borderColor:'#7B42F6',backgroundColor:'#F5EDFF'}});

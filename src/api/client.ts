@@ -1,6 +1,7 @@
 import axios from 'axios';
 import { API_BASE_URL } from '../config';
 import { getRefreshToken, saveRefreshToken, clearRefreshToken } from '../auth/tokenStorage';
+import { isDefinitiveAuthRejection, isNetworkError, shouldRetryOnce } from './errors';
 
 // Access tokens live in memory only (never persisted — see tokenStorage.ts
 // for why refresh tokens are the ones kept in SecureStore). AuthContext
@@ -28,21 +29,15 @@ export function setOnAuthFailure(cb: () => void): void {
   onAuthFailure = cb;
 }
 
-export const apiClient = axios.create({ baseURL: API_BASE_URL });
-console.log('[API] BASE URL:', API_BASE_URL);
+// 45 s, not 10: a hosted backend that has been idle can take most of a minute to
+// wake, and a short timeout made the first request after a quiet period fail.
+export const apiClient = axios.create({ baseURL: API_BASE_URL, timeout: 45000 });
 
 apiClient.interceptors.request.use((config) => {
-  console.log(
-    '[API REQUEST]',
-    config.method?.toUpperCase(),
-    `${config.baseURL ?? ''}${config.url ?? ''}`,
-  );
-
   if (accessToken) {
     config.headers = config.headers ?? {};
     (config.headers as Record<string, string>).Authorization = `Bearer ${accessToken}`;
   }
-
   return config;
 });
 
@@ -53,6 +48,9 @@ apiClient.interceptors.request.use((config) => {
 // (the backend rotates + invalidates the old refresh token on every use).
 let refreshPromise: Promise<string | null> | null = null;
 
+// Resolves to a new access token; to null ONLY when the server refused the refresh
+// token (the session really is over); and THROWS when the server simply couldn't be
+// reached (asleep, offline) — that must not sign the person out.
 async function refreshAccessToken(): Promise<string | null> {
   const refreshToken = await getRefreshToken();
   if (!refreshToken) return null;
@@ -66,8 +64,9 @@ async function refreshAccessToken(): Promise<string | null> {
     accessToken = newAccessToken;
     await saveRefreshToken(newRefreshToken); // rotation — the backend invalidates the old one on use
     return newAccessToken;
-  } catch {
-    return null;
+  } catch (e) {
+    if (isDefinitiveAuthRejection(e)) return null;
+    throw e; // network trouble: keep the session
   }
 }
 
@@ -75,6 +74,14 @@ apiClient.interceptors.response.use(
   (response) => response,
   async (error) => {
     const originalRequest = error.config;
+
+    // Slow or sleeping server: try once more (reads, sign-in and refresh only).
+    if (shouldRetryOnce(originalRequest, error)) {
+      originalRequest._networkRetried = true;
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+      return apiClient(originalRequest);
+    }
+
     if (error.response?.status === 401 && originalRequest && !originalRequest._retry) {
       originalRequest._retry = true;
 
@@ -83,7 +90,13 @@ apiClient.interceptors.response.use(
           refreshPromise = null;
         });
       }
-      const newAccessToken = await refreshPromise;
+      let newAccessToken: string | null;
+      try {
+        newAccessToken = await refreshPromise;
+      } catch (refreshError) {
+        // Couldn't reach the server to refresh. Not a logout: surface the network error.
+        return Promise.reject(isNetworkError(refreshError) ? refreshError : error);
+      }
 
       if (newAccessToken) {
         originalRequest.headers = originalRequest.headers ?? {};

@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -14,12 +14,22 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import Svg, { Path, Circle, Defs, LinearGradient, Stop, G, Line } from 'react-native-svg';
+import Svg, { Path, Circle, Defs, LinearGradient, Stop, G, Line, Text as SvgText } from 'react-native-svg';
 import * as Haptics from 'expo-haptics';
 import * as Crypto from 'expo-crypto';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { fetchRounds, fetchRound, fetchCrashStatus, cashOutCrash, placeEntry } from '../../api/games';
+import {
+  fetchRounds,
+  fetchCrashStatus,
+  cashOutCrash,
+  placeEntry,
+  fetchMyEntries,
+  fetchBigWins,
+  type GameRound,
+} from '../../api/games';
 import { fetchWallet } from '../../api/feed';
+import { playSound, setEngineMultiplier, startEngine, stopEngine, useSoundsEnabled } from '../../utils/gameAudio';
+import { derivePhase, flightElapsedMs, flightMultiplier, flightWindow, multiplierAtMs, pathOf, rocketRotationDeg, syncClock, trajectory, type FlightClock, type Phase } from './crashFlight';
 
 // BC.Game Visual Palette
 const BC_COLORS = {
@@ -39,48 +49,134 @@ const BC_COLORS = {
   textDim: '#5B6068',
 };
 
-interface RoundHistory {
-  id: string;
-  roundNumber: number;
-  multiplier: number;
-  hash: string;
-  serverSeed: string;
-  clientSeed: string;
-  nonce: number;
+// GameDefinition.code in the seed data is uppercase ('CRASH'), not 'crash'
+// — this must match exactly or fetchRounds('crash') would silently return
+// no rounds at all against a real backend (confirmed against prisma/seed.ts).
+const GAME_CODE = 'CRASH';
+
+// The moving part of the stage: the multiplier, the curve and the rocket. It redraws
+// about 30 times a second while a round is in flight, working the multiplier out from
+// the flight clock — so it glides — and the rest of the screen is left alone.
+function FlightLayer({
+  phase,
+  width,
+  height,
+  growthRate,
+  getElapsedMs,
+  crashedElapsedMs,
+  entryCoins,
+  colorFor,
+}: {
+  phase: Phase;
+  width: number;
+  height: number;
+  growthRate: number | null;
+  getElapsedMs: () => number;
+  crashedElapsedMs: number;
+  entryCoins: number | null;
+  colorFor: (m: number) => string;
+}) {
+  const [, setFrame] = useState(0);
+  useEffect(() => {
+    if (phase !== 'FLYING') return;
+    let raf = 0;
+    let last = 0;
+    const loop = (ts: number) => {
+      if (ts - last >= 33) {
+        last = ts;
+        setFrame((f) => (f + 1) % 1_000_000);
+      }
+      raf = requestAnimationFrame(loop);
+    };
+    raf = requestAnimationFrame(loop);
+    return () => cancelAnimationFrame(raf);
+  }, [phase]);
+
+  const g = growthRate ?? Math.log(2) / 5;
+  const crashed = phase === 'CRASHED';
+  const elapsed = crashed ? crashedElapsedMs : phase === 'FLYING' ? getElapsedMs() : 0;
+  const multiplier = multiplierAtMs(g, elapsed);
+  const pad = { l: 12, r: 24, t: 40, b: 22 };
+  const { points, head, angleDeg } = trajectory(g, elapsed, width, height, pad);
+  const { maxM } = flightWindow(elapsed, g);
+  const tone = crashed ? BC_COLORS.accentRed : BC_COLORS.accentGreen;
+  const line = pathOf(points);
+  const area = `${line} L ${head.x.toFixed(1)} ${height - pad.b} L ${points[0].x.toFixed(1)} ${height - pad.b} Z`;
+  const spanY = height - pad.t - pad.b;
+
+  return (
+    <>
+      <Svg width={width} height={height} style={StyleSheet.absoluteFill}>
+        <Defs>
+          <LinearGradient id="flightWash" x1="0" y1="0" x2="0" y2="1">
+            <Stop offset="0" stopColor={tone} stopOpacity="0.25" />
+            <Stop offset="1" stopColor={tone} stopOpacity="0.0" />
+          </LinearGradient>
+        </Defs>
+        {[0, 1 / 3, 2 / 3, 1].map((f) => {
+          const y = height - pad.b - f * spanY;
+          const m = 1 + f * (maxM - 1);
+          return (
+            <G key={f}>
+              <Line x1={pad.l} x2={width - pad.r + 8} y1={y} y2={y} stroke="rgba(255,255,255,0.06)" strokeWidth={1} />
+              <SvgText x={pad.l + 2} y={y - 3} fill={BC_COLORS.textDim} fontSize={9}>
+                {`${m.toFixed(m < 10 ? 1 : 0)}×`}
+              </SvgText>
+            </G>
+          );
+        })}
+        <Path d={area} fill="url(#flightWash)" />
+        <Path d={line} stroke={tone} strokeWidth={3.5} fill="none" strokeLinecap="round" />
+        {phase === 'FLYING' && <Circle cx={head.x} cy={head.y} r={11} fill={BC_COLORS.accentGreenGlow} />}
+      </Svg>
+
+      {/* The rocket, turned to follow the curve; a burst where it crashed */}
+      <Text
+        pointerEvents="none"
+        style={{
+          position: 'absolute',
+          left: head.x - 15,
+          top: head.y - 15,
+          fontSize: 26,
+          transform: crashed ? [] : [{ rotate: `${rocketRotationDeg(angleDeg)}deg` }],
+        }}
+      >
+        {crashed ? '💥' : '🚀'}
+      </Text>
+
+      {!crashed && (
+        <View style={styles.hudCenter} pointerEvents="none">
+          <View style={styles.multiplierBox}>
+            <Text style={[styles.multiplierMain, { color: colorFor(multiplier) }]}>
+              {multiplier.toFixed(2)}
+              <Text style={styles.multiplierX}>×</Text>
+            </Text>
+            {entryCoins != null && phase === 'FLYING' && (
+              <View style={styles.liveProfitPill}>
+                <Text style={styles.liveProfitText}>+{(entryCoins * multiplier - entryCoins).toFixed(2)} Coins</Text>
+              </View>
+            )}
+          </View>
+        </View>
+      )}
+    </>
+  );
 }
 
-interface SimulatedPlayer {
-  id: string;
-  name: string;
-  avatar: string;
-  amount: number;
-  targetMultiplier: number;
-  status: 'IN_PLAY' | 'CASHED_OUT' | 'BUST';
-  profit?: number;
-  isUser?: boolean;
-}
-
-const BOT_PRESETS: { name: string; avatar: string; baseBet: number; risk: number }[] = [
-  { name: 'CryptoWhale', avatar: '🐋', baseBet: 500, risk: 2.1 },
-  { name: 'ApeKing', avatar: '🦍', baseBet: 250, risk: 1.85 },
-  { name: 'DiamondHands', avatar: '💎', baseBet: 100, risk: 4.5 },
-  { name: 'RocketPilot', avatar: '👨‍🚀', baseBet: 50, risk: 1.4 },
-  { name: 'LuckyCharm', avatar: '🍀', baseBet: 200, risk: 2.4 },
-  { name: 'GoldenFalcon', avatar: '🦅', baseBet: 300, risk: 3.2 },
-  { name: 'MoonLover', avatar: '🌙', baseBet: 150, risk: 7.5 },
-  { name: 'SatoshiSeeker', avatar: '⚡', baseBet: 400, risk: 1.6 },
-];
-
-const INITIAL_HISTORY: RoundHistory[] = [
-  { id: '1', roundNumber: 4831, multiplier: 2.45, hash: 'a89c20f1882...', serverSeed: '78f9021...', clientSeed: 'bc_mobile_seed', nonce: 4831 },
-  { id: '2', roundNumber: 4830, multiplier: 1.34, hash: 'b14e390c123...', serverSeed: '62e8112...', clientSeed: 'bc_mobile_seed', nonce: 4830 },
-  { id: '3', roundNumber: 4829, multiplier: 12.80, hash: 'c90a187f342...', serverSeed: '83f7091...', clientSeed: 'bc_mobile_seed', nonce: 4829 },
-  { id: '4', roundNumber: 4828, multiplier: 1.05, hash: 'd55f728b991...', serverSeed: '99a1284...', clientSeed: 'bc_mobile_seed', nonce: 4828 },
-  { id: '5', roundNumber: 4827, multiplier: 3.62, hash: 'e33d452a817...', serverSeed: '12c8843...', clientSeed: 'bc_mobile_seed', nonce: 4827 },
-  { id: '6', roundNumber: 4826, multiplier: 104.20, hash: 'f21b789e004...', serverSeed: '45d7712...', clientSeed: 'bc_mobile_seed', nonce: 4826 },
-  { id: '7', roundNumber: 4825, multiplier: 1.88, hash: '098a123f456...', serverSeed: '77e9901...', clientSeed: 'bc_mobile_seed', nonce: 4825 },
-  { id: '8', roundNumber: 4824, multiplier: 5.10, hash: '765c981b223...', serverSeed: '34a5521...', clientSeed: 'bc_mobile_seed', nonce: 4824 },
-];
+// ---------------------------------------------------------------------
+// This screen previously ran an entirely local simulation: the crash
+// point was generated with Math.random() on-device (reproducing the
+// same house-edge formula that already existed correctly, server-side,
+// in games/crash-rules.ts), the flight multiplier was a local
+// setInterval loop, and cash-out profit was computed locally with no
+// wallet interaction at all. fetchRounds/placeEntry/cashOutCrash/
+// fetchCrashStatus were imported and never called.
+//
+// Every piece of game state below now comes from the real, transactional,
+// provably-fair backend (EntryService, CrashService, RngService) — this
+// screen only reads round/entry state and reacts to it; it never decides
+// a crash point, a multiplier, or a payout itself.
+// ---------------------------------------------------------------------
 
 export function CrashScreen() {
   const insets = useSafeAreaInsets();
@@ -88,8 +184,8 @@ export function CrashScreen() {
   const { width } = useWindowDimensions();
   const queryClient = useQueryClient();
 
-  const chartWidth = Math.max(300, width - 32);
-  const chartHeight = 220;
+  const chartWidth = Math.max(280, width - 48);
+  const chartHeight = 190;
 
   // Tabs & Settings
   const [tab, setTab] = useState<'MANUAL' | 'AUTO'>('MANUAL');
@@ -97,262 +193,291 @@ export function CrashScreen() {
   const [autoCashOutMultiplier, setAutoCashOutMultiplier] = useState('2.00');
   const [autoCashOutEnabled, setAutoCashOutEnabled] = useState(true);
 
-  // Auto Bet Configuration
-  const [autoRounds, setAutoRounds] = useState('10');
+  // Auto Bet Configuration — UI only; see handleToggleAutoRun below for
+  // why this doesn't actually place repeated real bets yet.
   const [autoRunning, setAutoRunning] = useState(false);
   const [onLossAction, setOnLossAction] = useState<'RESET' | 'DOUBLE'>('RESET');
 
-  // Round State
-  const [roundStatus, setRoundStatus] = useState<'COUNTDOWN' | 'FLYING' | 'CRASHED'>('COUNTDOWN');
-  const [roundNumber, setRoundNumber] = useState(4832);
-  const [currentMultiplier, setCurrentMultiplier] = useState(1.0);
-  const [targetCrashPoint, setTargetCrashPoint] = useState(3.15);
-  const [countdown, setCountdown] = useState(4.0);
-  const [history, setHistory] = useState<RoundHistory[]>(INITIAL_HISTORY);
-
-  // User Bet State in current round
-  const [userBet, setUserBet] = useState<{ amount: number; autoCashOut?: number; status: 'IN_PLAY' | 'CASHED_OUT' | 'BUST'; profit?: number } | null>(null);
-  const [queuedBet, setQueuedBet] = useState(false);
-  const [players, setPlayers] = useState<SimulatedPlayer[]>([]);
-
-  // Modals
-  const [selectedFairnessRound, setSelectedFairnessRound] = useState<RoundHistory | null>(null);
+  // Modals / view state
+  const [selectedFairnessRound, setSelectedFairnessRound] = useState<GameRound | null>(null);
   const [showTrends, setShowTrends] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
   const [activeBetsTab, setActiveBetsTab] = useState<'ALL' | 'MINE'>('ALL');
 
-  // Pulsing animation for cashout button
-  const pulseAnim = useRef(new Animated.Value(1)).current;
+  // Ticks purely to re-render the countdown against the round's real,
+  // server-set `lockAt` timestamp — this doesn't invent any game data,
+  // it just redraws a diff against a timestamp the server already gave us.
+  const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
-    if (roundStatus === 'FLYING' && userBet?.status === 'IN_PLAY') {
+    const id = setInterval(() => setNow(Date.now()), 100);
+    return () => clearInterval(id);
+  }, []);
+
+  const pulseAnim = useRef(new Animated.Value(1)).current;
+
+  // Real wallet — unchanged, this was already correctly wired; it just
+  // wasn't being read from anywhere on this screen before.
+  const walletQuery = useQuery({ queryKey: ['wallet'], queryFn: fetchWallet });
+  // Normal + bonus coins: the server stakes bonus coins first, and anything a
+  // bonus-funded stake wins stays bonus coins (they can be played, never withdrawn).
+  const bonusCoins = Number(walletQuery.data?.bonus ?? '0');
+  const balanceCoins = Number(walletQuery.data?.coin ?? '0') + bonusCoins;
+
+  // The round lifecycle itself. Rounds are created/opened/locked/settled
+  // by the server's own scheduler — nothing here is simulated. The list is
+  // checked often around the moments that matter (a round about to lock, a flight
+  // in progress) so the screen never sits on stale news, and gently otherwise.
+  const roundsQuery = useQuery({
+    queryKey: ['games', GAME_CODE, 'rounds'],
+    queryFn: () => fetchRounds(GAME_CODE),
+    refetchInterval: (query) => {
+      const list = (query.state.data ?? []) as GameRound[];
+      if (list.some((r) => r.status === 'LOCKED')) return 1500;
+      const open = list.find((r) => r.status === 'OPEN');
+      if (open && Date.now() >= new Date(open.lockAt).getTime() - 300) return 500;
+      return 2500;
+    },
+  });
+  const rounds = roundsQuery.data ?? [];
+  const liveRound = rounds.find((r) => r.status === 'OPEN' || r.status === 'LOCKED') ?? null;
+  const settledRounds = rounds.filter((r) => r.status === 'SETTLED');
+
+  // When a flight ends the round leaves the open/in-flight list. Keep showing its
+  // result for a few seconds (the crash, and whether you cashed out) before the next
+  // countdown takes over — before, it vanished the instant it settled.
+  const [held, setHeld] = useState<{ round: GameRound; until: number } | null>(null);
+  const lastLiveRef = useRef<GameRound | null>(null);
+  useEffect(() => {
+    if (liveRound) {
+      lastLiveRef.current = liveRound;
+      return;
+    }
+    const last = lastLiveRef.current;
+    // A round that ended normally keeps its result up for a moment; one the server
+    // cancelled (say, after a restart) has no result to show.
+    const cancelled = last ? rounds.find((r) => r.id === last.id)?.status === 'CANCELLED' : false;
+    if (last && last.status === 'LOCKED' && !cancelled) setHeld({ round: last, until: Date.now() + 5000 });
+    lastLiveRef.current = null;
+  }, [liveRound?.id, liveRound?.status]);
+  const holdActive = !!held && now < held.until;
+  const heldRound = holdActive ? rounds.find((r) => r.id === held!.round.id) ?? held!.round : null;
+  // The round the screen is about: the live one, or the one that just ended.
+  const currentRound: GameRound | null = liveRound ?? heldRound;
+
+  // The server's answer about the flight, checked about three times a second while a
+  // round is in flight. It is used to keep a local clock right, and to hear about the crash.
+  const crashStatusQuery = useQuery({
+    queryKey: ['games', GAME_CODE, 'status', liveRound?.id],
+    queryFn: async () => {
+      const sentAt = Date.now();
+      const data = await fetchCrashStatus(liveRound!.id);
+      return { data, sentAt, receivedAt: Date.now() };
+    },
+    enabled: !!liveRound && liveRound.status === 'LOCKED',
+    refetchInterval: 350,
+    retry: 1,
+  });
+
+  // The flight clock: between answers the phone works the multiplier out itself, many
+  // times a second, so the rocket glides instead of jumping each time an answer arrives.
+  const clockRef = useRef<FlightClock | null>(null);
+  const frozenRef = useRef<{ elapsedMs: number; multiplier: number } | null>(null);
+  const officialCrashPointRef = useRef<number | null>(null);
+  const crashRoundIdRef = useRef<string | null>(null);
+  const growthRef = useRef<number | null>(null);
+  useEffect(() => {
+    const roundId = liveRound?.id ?? null;
+    if (!roundId || crashRoundIdRef.current === roundId) return;
+    crashRoundIdRef.current = roundId;
+    clockRef.current = null;
+    frozenRef.current = null;
+    officialCrashPointRef.current = null;
+  }, [liveRound?.id]);
+  useEffect(() => {
+    const sample = crashStatusQuery.data;
+    if (!sample) return;
+    const d = sample.data;
+    if (d.status === 'CRASHED' && typeof d.multiplier === 'number' && Number.isFinite(d.multiplier)) {
+      officialCrashPointRef.current = d.multiplier;
+    }
+    if (d.status === 'LIVE' && d.growthRate != null && d.elapsedMs != null) {
+      growthRef.current = d.growthRate;
+      clockRef.current = syncClock(clockRef.current, { growthRate: d.growthRate, elapsedMs: d.elapsedMs, sentAt: sample.sentAt, receivedAt: sample.receivedAt });
+    }
+  }, [crashStatusQuery.dataUpdatedAt]);
+
+  // My own entry in the current round (0 or 1).
+  const myEntriesQuery = useQuery({
+    queryKey: ['games', GAME_CODE, 'myEntries', currentRound?.id],
+    queryFn: () => fetchMyEntries(currentRound!.id),
+    enabled: !!currentRound,
+    refetchInterval: currentRound?.status === 'LOCKED' ? 1000 : false,
+  });
+  const myEntry = myEntriesQuery.data?.[0] ?? null;
+
+  // Real recent big wins (no invented players).
+  const bigWinsQuery = useQuery({
+    queryKey: ['games', GAME_CODE, 'bigWins'],
+    queryFn: () => fetchBigWins(GAME_CODE),
+    refetchInterval: 8000,
+  });
+
+  const crashedByServer = crashStatusQuery.data?.data.status === 'CRASHED' || (liveRound == null && holdActive);
+  const flyingByServer = crashStatusQuery.data?.data.status === 'LIVE' && !!clockRef.current;
+  const roundStatus: Phase = derivePhase({ round: liveRound, live: flyingByServer, crashed: crashedByServer, now, holdUntil: held?.until ?? 0 });
+
+  // The moment the crash is first seen, remember exactly where the rocket was, so the
+  // picture holds still there until the official crash point arrives.
+  if (roundStatus === 'CRASHED' && !frozenRef.current && clockRef.current) {
+    const el = flightElapsedMs(clockRef.current, now);
+    frozenRef.current = { elapsedMs: el, multiplier: multiplierAtMs(clockRef.current.growthRate, el) };
+  }
+
+  const settledCrashPoint =
+    (currentRound?.result as { crashPoint?: number } | null)?.crashPoint ??
+    officialCrashPointRef.current ??
+    (crashStatusQuery.data?.data.status === 'CRASHED' ? crashStatusQuery.data.data.multiplier : null) ??
+    null;
+  const liveMultiplier = roundStatus === 'FLYING' && clockRef.current ? flightMultiplier(clockRef.current, now) : 1.0;
+  // While CRASHED but before ANY official number has arrived (a genuinely brief
+  // window, but a real one — settlement takes a moment), hold the display at
+  // exactly where the rocket already was, rather than snapping the number to
+  // 1.00x and the rocket back to the launch position. A previous edit here
+  // removed this fallback entirely, which is worse than the mismatch it was
+  // meant to fix.
+  const currentMultiplier = roundStatus === 'CRASHED' ? settledCrashPoint ?? frozenRef.current?.multiplier ?? 1.0 : liveMultiplier;
+  // How far along the picture should be drawn once it has crashed.
+  const crashedElapsedMs =
+    growthRef.current && settledCrashPoint && settledCrashPoint > 1
+      ? (Math.log(settledCrashPoint) / growthRef.current) * 1000
+      : frozenRef.current?.elapsedMs ?? 0;
+
+  const countdownWindowSec = currentRound
+    ? Math.max(1, (new Date(currentRound.lockAt).getTime() - new Date(currentRound.openAt).getTime()) / 1000)
+    : 4;
+  const countdown = currentRound && currentRound.status === 'OPEN' ? Math.max(0, (new Date(currentRound.lockAt).getTime() - now) / 1000) : 0;
+
+  useEffect(() => {
+    if (roundStatus === 'FLYING' && myEntry?.status === 'PLACED') {
       Animated.loop(
         Animated.sequence([
           Animated.timing(pulseAnim, { toValue: 1.03, duration: 350, useNativeDriver: true }),
           Animated.timing(pulseAnim, { toValue: 1.0, duration: 350, useNativeDriver: true }),
-        ])
+        ]),
       ).start();
     } else {
       pulseAnim.setValue(1);
     }
-  }, [roundStatus, userBet?.status, pulseAnim]);
+  }, [roundStatus, myEntry?.status, pulseAnim]);
 
-  // Wallet Query
-  const walletQuery = useQuery({
-    queryKey: ['wallet'],
-    queryFn: fetchWallet,
-  });
-  const balanceCoins = Number(walletQuery.data?.coin ?? '5000');
-
-  // Initialize simulated bots for round
-  const spawnPlayers = useCallback((includeUser?: { amount: number; autoCashOut?: number }) => {
-    const bots: SimulatedPlayer[] = BOT_PRESETS.slice(0, Math.floor(Math.random() * 3) + 5).map((bot, i) => {
-      const target = Number((bot.risk + (Math.random() - 0.5) * 0.4).toFixed(2));
-      return {
-        id: `bot-${i}-${Date.now()}`,
-        name: bot.name,
-        avatar: bot.avatar,
-        amount: bot.baseBet,
-        targetMultiplier: Math.max(1.1, target),
-        status: 'IN_PLAY' as const,
-        isUser: false,
-      };
-    });
-
-    if (includeUser) {
-      bots.unshift({
-        id: 'user',
-        name: 'You (VIP)',
-        avatar: '👑',
-        amount: includeUser.amount,
-        targetMultiplier: includeUser.autoCashOut ?? 999,
-        status: 'IN_PLAY',
-        isUser: true,
-      });
-      setUserBet({ amount: includeUser.amount, autoCashOut: includeUser.autoCashOut, status: 'IN_PLAY' });
-    } else {
-      setUserBet(null);
-    }
-    setPlayers(bots);
-  }, []);
-
-  // Loop refs
-  const flightTimerRef = useRef<NodeJS.Timeout | null>(null);
-  const countdownTimerRef = useRef<NodeJS.Timeout | null>(null);
-
-  // Crash Logic
-  const triggerCrash = useCallback((finalCrash: number) => {
-    if (flightTimerRef.current) clearInterval(flightTimerRef.current);
-    setRoundStatus('CRASHED');
-    setCurrentMultiplier(finalCrash);
-    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-
-    // Update user bet if still in play
-    setUserBet((prev) => {
-      if (prev && prev.status === 'IN_PLAY') {
-        return { ...prev, status: 'BUST' };
-      }
-      return prev;
-    });
-
-    // Update bots
-    setPlayers((prev) =>
-      prev.map((p) => (p.status === 'IN_PLAY' ? { ...p, status: 'BUST' } : p))
-    );
-
-    // Add to history
-    const newHistoryItem: RoundHistory = {
-      id: String(Date.now()),
-      roundNumber: roundNumber,
-      multiplier: finalCrash,
-      hash: 'sha256_' + Math.random().toString(36).substring(2, 15),
-      serverSeed: 'seed_' + Math.random().toString(36).substring(2, 10),
-      clientSeed: 'bc_mobile_seed',
-      nonce: roundNumber,
-    };
-    setHistory((prev) => [newHistoryItem, ...prev.slice(0, 24)]);
-    setRoundNumber((r) => r + 1);
-
-    // Prepare next round in 3.5 seconds
-    setTimeout(() => {
-      startCountdown();
-    }, 3500);
-  }, [roundNumber]);
-
-  // Rocket Flight Loop
-  const startFlight = useCallback((crashAt: number) => {
-    setRoundStatus('FLYING');
-    setQueuedBet(false);
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-
-    const startTime = Date.now();
-
-    flightTimerRef.current = setInterval(() => {
-      const elapsedSec = (Date.now() - startTime) / 1000;
-      // Exponential curve: multiplier = 1.0 + (t^1.7)*0.065
-      const current = Number((1.0 + Math.pow(elapsedSec, 1.7) * 0.065).toFixed(2));
-
-      if (current >= crashAt) {
-        triggerCrash(crashAt);
-        return;
-      }
-
-      setCurrentMultiplier(current);
-
-      // Check user auto cash out
-      setUserBet((u) => {
-        if (u && u.status === 'IN_PLAY' && u.autoCashOut && current >= u.autoCashOut) {
-          const profit = Number((u.amount * u.autoCashOut - u.amount).toFixed(2));
-          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-          return { ...u, status: 'CASHED_OUT', profit };
-        }
-        return u;
-      });
-
-      // Check bots
-      setPlayers((prev) =>
-        prev.map((p) => {
-          if (p.status === 'IN_PLAY' && current >= p.targetMultiplier) {
-            const profit = Number((p.amount * p.targetMultiplier - p.amount).toFixed(2));
-            return { ...p, status: 'CASHED_OUT', profit };
-          }
-          return p;
-        })
-      );
-    }, 80);
-  }, [triggerCrash]);
-
-  // Start Countdown
-  const startCountdown = useCallback(() => {
-    if (flightTimerRef.current) clearInterval(flightTimerRef.current);
-    if (countdownTimerRef.current) clearInterval(countdownTimerRef.current);
-
-    setRoundStatus('COUNTDOWN');
-    setCurrentMultiplier(1.0);
-    setCountdown(4.0);
-
-    // Random crash point with 99% house edge distribution
-    const r = Math.random();
-    const generatedCrash = r < 0.03 ? 1.00 : Number(Math.max(1.01, Math.min(150, (0.99 / (1 - r)))).toFixed(2));
-    setTargetCrashPoint(generatedCrash);
-
-    // If auto bet or queued
-    const numericStake = Number(betAmount) || 100;
-    const targetAuto = autoCashOutEnabled && Number(autoCashOutMultiplier) > 1.01 ? Number(autoCashOutMultiplier) : undefined;
-    if (queuedBet || autoRunning) {
-      spawnPlayers({ amount: numericStake, autoCashOut: targetAuto });
-    } else {
-      spawnPlayers();
-    }
-
-    let remaining = 4.0;
-    countdownTimerRef.current = setInterval(() => {
-      remaining -= 0.1;
-      setCountdown(Math.max(0, Number(remaining.toFixed(1))));
-
-      if (remaining <= 0) {
-        if (countdownTimerRef.current) clearInterval(countdownTimerRef.current);
-        startFlight(generatedCrash);
-      }
-    }, 100);
-  }, [betAmount, autoCashOutMultiplier, autoCashOutEnabled, queuedBet, autoRunning, spawnPlayers, startFlight]);
-
-  // Mount
+  // Fires haptic feedback off the real status transition instead of a
+  // local loop calling triggerCrash() directly.
+  const prevStatusRef = useRef(roundStatus);
   useEffect(() => {
-    startCountdown();
-    return () => {
-      if (flightTimerRef.current) clearInterval(flightTimerRef.current);
-      if (countdownTimerRef.current) clearInterval(countdownTimerRef.current);
-    };
-  }, []);
+    if (prevStatusRef.current !== 'CRASHED' && roundStatus === 'CRASHED') {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      playSound('crash');
+      // Settlement lands about a second after the crash: refresh what you won or lost.
+      const id = currentRound?.id;
+      const refresh = () => {
+        queryClient.invalidateQueries({ queryKey: ['games', GAME_CODE, 'myEntries', id] });
+        queryClient.invalidateQueries({ queryKey: ['wallet'] });
+      };
+      const t1 = setTimeout(refresh, 1200);
+      const t2 = setTimeout(refresh, 3200);
+      prevStatusRef.current = roundStatus;
+      return () => {
+        clearTimeout(t1);
+        clearTimeout(t2);
+      };
+    }
+    prevStatusRef.current = roundStatus;
+  }, [roundStatus]);
 
-  // User Actions
+  // ── sound ──
+  const [soundsOn, toggleSounds] = useSoundsEnabled();
+  useEffect(() => {
+    if (roundStatus === 'FLYING') startEngine();
+    else stopEngine();
+  }, [roundStatus, soundsOn]);
+  useEffect(() => {
+    if (roundStatus === 'FLYING') setEngineMultiplier(liveMultiplier);
+  }, [liveMultiplier, roundStatus]);
+  useEffect(() => () => stopEngine(), []);
+  // the last three seconds of the countdown tick
+  const tickSec = roundStatus === 'COUNTDOWN' && currentRound?.status === 'OPEN' ? Math.ceil(countdown) : 0;
+  useEffect(() => {
+    if (tickSec >= 1 && tickSec <= 3) playSound('tick', 0.7);
+  }, [tickSec]);
+
+  const canBet = currentRound?.status === 'OPEN' && !myEntry;
+
+  const placeMutation = useMutation({
+    mutationFn: () => {
+      if (!currentRound) throw new Error('No round is open for entries right now');
+      const amount = Math.floor(Number(betAmount));
+      return placeEntry(currentRound.id, {
+        selection: [],
+        stakeAmount: amount,
+        idempotencyKey: Crypto.randomUUID(),
+        autoCashoutMultiplier: autoCashOutEnabled ? Number(autoCashOutMultiplier) : undefined,
+      });
+    },
+    onSuccess: () => {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
+      playSound('bet');
+      queryClient.invalidateQueries({ queryKey: ['games', GAME_CODE, 'myEntries', currentRound?.id] });
+      queryClient.invalidateQueries({ queryKey: ['wallet'] });
+    },
+    onError: (error: any) => {
+      Alert.alert('Could not place bet', error?.response?.data?.message ?? 'Something went wrong');
+    },
+  });
+
+  const cashOutMutation = useMutation({
+    mutationFn: () => cashOutCrash(currentRound!.id),
+    onSuccess: () => {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      playSound('cashout');
+      queryClient.invalidateQueries({ queryKey: ['games', GAME_CODE, 'myEntries', currentRound?.id] });
+      queryClient.invalidateQueries({ queryKey: ['wallet'] });
+    },
+    onError: (error: any) => {
+      Alert.alert('Too late', error?.response?.data?.message ?? 'The round has already crashed.');
+    },
+  });
+
   const handleBetSubmit = () => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
     const amount = Number(betAmount);
-    if (amount <= 0 || isNaN(amount)) {
+    if (!amount || amount <= 0 || isNaN(amount)) {
       Alert.alert('Invalid Stake', 'Please enter a valid coin amount');
       return;
     }
-
-    if (roundStatus === 'COUNTDOWN') {
-      if (queuedBet) {
-        setQueuedBet(false);
-        setUserBet(null);
-        setPlayers((prev) => prev.filter((p) => !p.isUser));
-      } else {
-        setQueuedBet(true);
-        const autoMult = autoCashOutEnabled ? Number(autoCashOutMultiplier) : undefined;
-        setUserBet({ amount, autoCashOut: autoMult, status: 'IN_PLAY' });
-        setPlayers((prev) => [
-          {
-            id: 'user',
-            name: 'You (VIP)',
-            avatar: '👑',
-            amount,
-            targetMultiplier: autoMult ?? 999,
-            status: 'IN_PLAY',
-            isUser: true,
-          },
-          ...prev.filter((p) => !p.isUser),
-        ]);
-      }
-    } else {
-      // In flight: Queue for next round
-      setQueuedBet((prev) => !prev);
+    if (!currentRound || currentRound.status !== 'OPEN') {
+      Alert.alert('Round not open', 'Wait for the next round to start accepting bets.');
+      return;
     }
+    placeMutation.mutate();
   };
 
   const handleCashOut = () => {
-    if (roundStatus !== 'FLYING' || !userBet || userBet.status !== 'IN_PLAY') return;
-    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    const profit = Number((userBet.amount * currentMultiplier - userBet.amount).toFixed(2));
-    setUserBet({ ...userBet, status: 'CASHED_OUT', profit });
-    setPlayers((prev) =>
-      prev.map((p) => (p.isUser ? { ...p, status: 'CASHED_OUT', profit } : p))
+    if (!currentRound || roundStatus !== 'FLYING' || !myEntry || myEntry.status !== 'PLACED') return;
+    cashOutMutation.mutate();
+  };
+
+  // Automatic repeated real-money betting across rounds isn't built —
+  // the old "auto bet" toggle here never actually re-placed a bet
+  // either, it just spawned one extra cosmetic bot row once per
+  // simulated round. Being honest about that gap rather than quietly
+  // wiring it to fire repeated real placeEntry() calls unattended (which
+  // needs its own loss-limit/stop-condition design, not just an API call).
+  const handleToggleAutoRun = () => {
+    Alert.alert(
+      'Not available yet',
+      "Automatic multi-round betting isn't implemented against the real game engine yet — place bets manually for now.",
     );
   };
 
-  // Multiplier style helper
   const getMultiplierColor = (m: number) => {
     if (m >= 100) return BC_COLORS.accentPurple;
     if (m >= 10) return BC_COLORS.accentGold;
@@ -360,37 +485,32 @@ export function CrashScreen() {
     return BC_COLORS.textWhite;
   };
 
-  // SVG Exponential Curve Geometry
-  const curvePoints = useMemo(() => {
-    const pointsCount = 14;
-    const progress = Math.min(1, (currentMultiplier - 1.0) / Math.max(1, targetCrashPoint - 1.0));
-    const maxX = chartWidth - 35;
-    const maxY = chartHeight - 35;
+  const potentialProfit =
+    myEntry && myEntry.status === 'PLACED'
+      ? Number((myEntry.coinAmount * currentMultiplier - myEntry.coinAmount).toFixed(2))
+      : 0;
 
-    const coords: { x: number; y: number }[] = [];
-    for (let i = 0; i < pointsCount; i++) {
-      const t = (i / (pointsCount - 1)) * progress;
-      const x = 15 + t * (maxX - 15);
-      const y = maxY - Math.pow(t, 1.6) * (maxY - 25);
-      coords.push({ x, y });
-    }
-    return coords;
-  }, [currentMultiplier, targetCrashPoint, chartWidth, chartHeight]);
-
-  const curveSvgPath = useMemo(() => {
-    if (curvePoints.length === 0) return '';
-    const line = curvePoints.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x.toFixed(1)} ${p.y.toFixed(1)}`).join(' ');
-    const last = curvePoints[curvePoints.length - 1];
+  // Real distribution stats derived from actually-settled rounds (up to
+  // the last 20 the backend returns) — replaces the four hardcoded
+  // percentages and hardcoded "2.14×" median that used to sit here.
+  const trendStats = useMemo(() => {
+    const multipliers = settledRounds
+      .map((r) => (r.result as { crashPoint?: number } | null)?.crashPoint ?? 0)
+      .filter((m) => m > 0);
+    if (multipliers.length === 0) return { max: 0, median: 0, low: 0, mid: 0, high: 0, jackpot: 0 };
+    const sorted = [...multipliers].sort((a, b) => a - b);
+    const median = sorted[Math.floor(sorted.length / 2)];
+    const pct = (pred: (m: number) => boolean) =>
+      Math.round((multipliers.filter(pred).length / multipliers.length) * 100);
     return {
-      line,
-      area: `${line} L ${last.x.toFixed(1)} ${chartHeight - 35} L 15 ${chartHeight - 35} Z`,
-      head: last,
+      max: Math.max(...multipliers),
+      median,
+      low: pct((m) => m < 2),
+      mid: pct((m) => m >= 2 && m < 10),
+      high: pct((m) => m >= 10 && m < 100),
+      jackpot: pct((m) => m >= 100),
     };
-  }, [curvePoints, chartHeight]);
-
-  const potentialProfit = userBet && userBet.status === 'IN_PLAY'
-    ? Number((userBet.amount * currentMultiplier - userBet.amount).toFixed(2))
-    : 0;
+  }, [settledRounds]);
 
   return (
     <View style={[styles.screen, { paddingTop: insets.top }]}>
@@ -413,7 +533,9 @@ export function CrashScreen() {
                 <Text style={styles.brandBadgeText}>ORIGINAL</Text>
               </View>
             </View>
-            <Text style={styles.roundSubtitle}>Round #{roundNumber}</Text>
+            <Text style={styles.roundSubtitle}>
+              {currentRound ? `Round #${currentRound.id.slice(0, 6).toUpperCase()}` : 'Waiting for next round…'}
+            </Text>
           </View>
         </View>
 
@@ -421,14 +543,17 @@ export function CrashScreen() {
           {/* Balance Chip */}
           <View style={styles.walletChip}>
             <Ionicons name="logo-bitcoin" size={13} color={BC_COLORS.accentGold} />
-            <Text style={styles.walletText}>{balanceCoins.toLocaleString()}</Text>
+            <Text style={styles.walletText}>
+              {balanceCoins.toLocaleString()}
+              {bonusCoins > 0 ? ` (${bonusCoins.toLocaleString()} bonus)` : ''}
+            </Text>
           </View>
 
           {/* Provably Fair Button */}
           <Pressable
             onPress={() => {
               Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-              setSelectedFairnessRound(history[0]);
+              setSelectedFairnessRound(settledRounds[0] ?? null);
             }}
             style={styles.iconBtnRound}
           >
@@ -445,25 +570,34 @@ export function CrashScreen() {
           >
             <Ionicons name="help-circle-outline" size={18} color={BC_COLORS.textMuted} />
           </Pressable>
+
+          {/* Sound on / off (remembered) */}
+          <Pressable onPress={toggleSounds} style={styles.iconBtnRound} accessibilityLabel={soundsOn ? 'Turn sound off' : 'Turn sound on'}>
+            <Ionicons name={soundsOn ? 'volume-high' : 'volume-mute'} size={17} color={soundsOn ? BC_COLORS.accentGreen : BC_COLORS.textMuted} />
+          </Pressable>
         </View>
       </View>
 
-      <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
-        {/* Horizontal Recent Multipliers Ribbon */}
+      <ScrollView contentContainerStyle={[styles.scrollContent, { paddingBottom: insets.bottom + 28 }]} showsVerticalScrollIndicator={false}>
+        {/* Horizontal Recent Multipliers Ribbon — real settled rounds only */}
         <View style={styles.ribbonContainer}>
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.ribbonScroll}>
-            {history.slice(0, 15).map((item) => {
-              const color = getMultiplierColor(item.multiplier);
+            {settledRounds.length === 0 && (
+              <Text style={{ color: BC_COLORS.textDim, fontSize: 11, paddingVertical: 4 }}>No rounds settled yet</Text>
+            )}
+            {settledRounds.slice(0, 15).map((round) => {
+              const multiplier = (round.result as { crashPoint?: number } | null)?.crashPoint ?? 0;
+              const color = getMultiplierColor(multiplier);
               return (
                 <Pressable
-                  key={item.id}
+                  key={round.id}
                   onPress={() => {
                     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                    setSelectedFairnessRound(item);
+                    setSelectedFairnessRound(round);
                   }}
                   style={[styles.historyPill, { borderColor: color + '55', backgroundColor: color + '15' }]}
                 >
-                  <Text style={[styles.historyPillText, { color }]}>{item.multiplier.toFixed(2)}×</Text>
+                  <Text style={[styles.historyPillText, { color }]}>{multiplier.toFixed(2)}×</Text>
                 </Pressable>
               );
             })}
@@ -490,76 +624,42 @@ export function CrashScreen() {
                 {roundStatus === 'FLYING' ? 'IN FLIGHT' : roundStatus === 'CRASHED' ? 'CRASHED' : 'STARTING'}
               </Text>
             </View>
-            <Text style={styles.networkStat}>99% RTP · PROVABLY FAIR</Text>
+            <Text style={styles.networkStat}>PROVABLY FAIR</Text>
           </View>
 
           {/* Central Multiplier HUD */}
           <View style={styles.hudCenter} pointerEvents="none">
             {roundStatus === 'COUNTDOWN' ? (
               <View style={styles.countdownBox}>
-                <Text style={styles.countdownTitle}>NEXT ROUND IN</Text>
-                <Text style={styles.countdownNumber}>{countdown.toFixed(1)}s</Text>
+                <Text style={styles.countdownTitle}>{currentRound ? 'NEXT ROUND IN' : 'WAITING FOR NEXT ROUND'}</Text>
+                <Text style={styles.countdownNumber}>{currentRound ? `${countdown.toFixed(1)}s` : '—'}</Text>
                 <View style={styles.countdownBarBg}>
-                  <View style={[styles.countdownBarFill, { width: `${(countdown / 4.0) * 100}%` }]} />
+                  <View style={[styles.countdownBarFill, { width: `${Math.min(100, (countdown / countdownWindowSec) * 100)}%` }]} />
                 </View>
               </View>
             ) : roundStatus === 'CRASHED' ? (
               <View style={styles.crashedBox}>
                 <Text style={styles.crashedLabel}>CRASHED</Text>
-                <Text style={styles.crashedMultiplier}>@{currentMultiplier.toFixed(2)}×</Text>
-              </View>
-            ) : (
-              <View style={styles.multiplierBox}>
-                <Text style={[styles.multiplierMain, { color: getMultiplierColor(currentMultiplier) }]}>
-                  {currentMultiplier.toFixed(2)}
-                  <Text style={styles.multiplierX}>×</Text>
+                <Text style={styles.crashedMultiplier}>
+                  {settledCrashPoint != null ? `@${settledCrashPoint.toFixed(2)}×` : 'Settling…'}
                 </Text>
-                {userBet && userBet.status === 'IN_PLAY' && (
-                  <View style={styles.liveProfitPill}>
-                    <Text style={styles.liveProfitText}>+{potentialProfit.toFixed(2)} Coins</Text>
-                  </View>
-                )}
               </View>
-            )}
+            ) : null}
           </View>
 
           {/* Real-time SVG Rocket Flight Trajectory */}
           {roundStatus !== 'COUNTDOWN' && (
-            <Svg width={chartWidth} height={chartHeight} style={StyleSheet.absoluteFill}>
-              <Defs>
-                <LinearGradient id="flightWash" x1="0" y1="0" x2="0" y2="1">
-                  <Stop offset="0" stopColor={roundStatus === 'CRASHED' ? BC_COLORS.accentRed : BC_COLORS.accentGreen} stopOpacity="0.25" />
-                  <Stop offset="1" stopColor={roundStatus === 'CRASHED' ? BC_COLORS.accentRed : BC_COLORS.accentGreen} stopOpacity="0.0" />
-                </LinearGradient>
-              </Defs>
-              {curveSvgPath.area && (
-                <Path d={curveSvgPath.area} fill="url(#flightWash)" />
-              )}
-              {curveSvgPath.line && (
-                <Path
-                  d={curveSvgPath.line}
-                  stroke={roundStatus === 'CRASHED' ? BC_COLORS.accentRed : BC_COLORS.accentGreen}
-                  strokeWidth={3.5}
-                  fill="none"
-                  strokeLinecap="round"
-                />
-              )}
-              {curveSvgPath.head && roundStatus === 'FLYING' && (
-                <G>
-                  <Circle cx={curveSvgPath.head.x} cy={curveSvgPath.head.y} r={10} fill={BC_COLORS.accentGreenGlow} />
-                  <Circle cx={curveSvgPath.head.x} cy={curveSvgPath.head.y} r={5} fill="#FFF" />
-                </G>
-              )}
-            </Svg>
+            <FlightLayer
+              phase={roundStatus}
+              width={chartWidth}
+              height={chartHeight}
+              growthRate={growthRef.current}
+              getElapsedMs={() => (clockRef.current ? flightElapsedMs(clockRef.current, Date.now()) : 0)}
+              crashedElapsedMs={crashedElapsedMs}
+              entryCoins={myEntry && myEntry.status === 'PLACED' ? myEntry.coinAmount : null}
+              colorFor={getMultiplierColor}
+            />
           )}
-
-          {/* Grid Baseline */}
-          <View style={styles.gridBaseline}>
-            <Text style={styles.gridLabel}>1.00×</Text>
-            <Text style={styles.gridLabel}>2.00×</Text>
-            <Text style={styles.gridLabel}>5.00×</Text>
-            <Text style={styles.gridLabel}>10.00×</Text>
-          </View>
         </View>
 
         {/* Wagering Console (Manual vs Auto) */}
@@ -698,18 +798,19 @@ export function CrashScreen() {
                 </View>
               </View>
 
-              {/* Dynamic Big Action Button */}
-              {roundStatus === 'FLYING' && userBet && userBet.status === 'IN_PLAY' ? (
-                // ACTIVE BET IN FLIGHT: Big Pulsating Cashout Button
+              {/* Dynamic Big Action Button — driven entirely by the real
+                  GameEntry status (PLACED/WON/LOST), not local state. */}
+              {roundStatus === 'FLYING' && myEntry?.status === 'PLACED' ? (
                 <Animated.View style={{ transform: [{ scale: pulseAnim }] }}>
                   <Pressable
                     onPress={handleCashOut}
-                    style={[styles.bigBtn, styles.cashOutBtn]}
+                    disabled={cashOutMutation.isPending}
+                    style={[styles.bigBtn, styles.cashOutBtn, cashOutMutation.isPending && { opacity: 0.7 }]}
                   >
                     <View style={styles.cashOutInner}>
                       <View style={styles.btnRow}>
                         <Ionicons name="flash" size={20} color="#000" />
-                        <Text style={styles.cashOutTitle}>CASH OUT</Text>
+                        <Text style={styles.cashOutTitle}>{cashOutMutation.isPending ? 'CASHING OUT…' : 'CASH OUT'}</Text>
                       </View>
                       <Text style={styles.cashOutSub}>
                         +{potentialProfit.toFixed(2)} COINS ({currentMultiplier.toFixed(2)}×)
@@ -717,35 +818,39 @@ export function CrashScreen() {
                     </View>
                   </Pressable>
                 </Animated.View>
-              ) : roundStatus === 'FLYING' && userBet && userBet.status === 'CASHED_OUT' ? (
-                // ALREADY CASHED OUT
+              ) : myEntry && myEntry.status === 'WON' ? (
                 <View style={styles.cashedOutBanner}>
                   <Ionicons name="checkmark-circle" size={20} color={BC_COLORS.accentGreen} />
                   <Text style={styles.cashedOutBannerText}>
-                    CASHED OUT (+{userBet.profit?.toFixed(2)} COINS)
+                    CASHED OUT (+{(myEntry.rewardAmount - myEntry.coinAmount).toFixed(2)} COINS)
+                  </Text>
+                </View>
+              ) : myEntry && myEntry.status === 'LOST' ? (
+                <View style={[styles.cashedOutBanner, { backgroundColor: 'rgba(255,71,87,0.12)', borderColor: 'rgba(255,71,87,0.3)' }]}>
+                  <Ionicons name="close-circle" size={20} color={BC_COLORS.accentRed} />
+                  <Text style={[styles.cashedOutBannerText, { color: BC_COLORS.accentRed }]}>
+                    BUSTED — LOST {myEntry.coinAmount} COINS
                   </Text>
                 </View>
               ) : (
-                // COUNTDOWN OR CRASHED: Standard Bet Button
                 <Pressable
                   onPress={handleBetSubmit}
-                  style={[
-                    styles.bigBtn,
-                    queuedBet ? styles.cancelBetBtn : styles.standardBetBtn,
-                  ]}
+                  disabled={!canBet || placeMutation.isPending}
+                  style={[styles.bigBtn, styles.standardBetBtn, (!canBet || placeMutation.isPending) && { opacity: 0.5 }]}
                 >
-                  <Text style={[styles.bigBtnText, queuedBet && { color: '#FFF' }]}>
-                    {queuedBet
-                      ? `CANCEL BET (${betAmount})`
-                      : roundStatus === 'FLYING'
-                      ? `BET NEXT ROUND (${betAmount})`
+                  <Text style={styles.bigBtnText}>
+                    {placeMutation.isPending
+                      ? 'PLACING BET…'
+                      : !currentRound || currentRound.status !== 'OPEN'
+                      ? 'WAITING FOR NEXT ROUND…'
                       : `BET ${betAmount} COINS`}
                   </Text>
                 </Pressable>
               )}
             </View>
           ) : (
-            /* AUTO BETTING MODE (Martingale) */
+            /* AUTO BETTING MODE — UI preserved, but see handleToggleAutoRun:
+               this doesn't place real repeated bets yet. */
             <View style={styles.autoControls}>
               <View style={styles.inputGroup}>
                 <Text style={styles.inputLabel}>Base Bet</Text>
@@ -796,7 +901,7 @@ export function CrashScreen() {
               <Pressable
                 onPress={() => {
                   Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
-                  setAutoRunning(!autoRunning);
+                  handleToggleAutoRun();
                 }}
                 style={[styles.bigBtn, autoRunning ? styles.cancelBetBtn : styles.standardBetBtn]}
               >
@@ -808,7 +913,7 @@ export function CrashScreen() {
           )}
         </View>
 
-        {/* Live Multiplayer Lobby Table */}
+        {/* Recent Big Wins / My Bet — real data, replacing the fake bot roster */}
         <View style={styles.tableCard}>
           <View style={styles.tableHeader}>
             <View style={styles.tableTabs}>
@@ -817,7 +922,7 @@ export function CrashScreen() {
                 style={[styles.tableTabBtn, activeBetsTab === 'ALL' && styles.tableTabBtnActive]}
               >
                 <Text style={[styles.tableTabText, activeBetsTab === 'ALL' && styles.tableTabTextActive]}>
-                  All Bets ({players.length})
+                  Recent Big Wins
                 </Text>
               </Pressable>
               <Pressable
@@ -825,56 +930,68 @@ export function CrashScreen() {
                 style={[styles.tableTabBtn, activeBetsTab === 'MINE' && styles.tableTabBtnActive]}
               >
                 <Text style={[styles.tableTabText, activeBetsTab === 'MINE' && styles.tableTabTextActive]}>
-                  My Bets
+                  My Bet
                 </Text>
               </Pressable>
             </View>
           </View>
 
-          {/* Rows */}
           <View style={styles.tableContent}>
-            {players.map((player) => (
-              <View
-                key={player.id}
-                style={[styles.playerRow, player.isUser && styles.userPlayerRow]}
-              >
+            {activeBetsTab === 'ALL' ? (
+              (bigWinsQuery.data ?? []).length === 0 ? (
+                <Text style={styles.emptyTableText}>No big wins yet — be the first.</Text>
+              ) : (
+                (bigWinsQuery.data ?? []).map((win) => (
+                  <View key={win.id} style={styles.playerRow}>
+                    <View style={styles.playerInfo}>
+                      <Ionicons name="person-circle-outline" size={16} color={BC_COLORS.textMuted} />
+                      {/* No username lookup exists for GameEntry.userId — see
+                          api/games.ts's fetchBigWins comment. Not inventing one. */}
+                      <Text style={styles.playerName}>Player {win.userId.slice(0, 6)}</Text>
+                    </View>
+                    <View style={styles.playerPayout}>
+                      <Text style={styles.playerBetText}>{win.coinAmount} COINS</Text>
+                      <Text style={styles.playerWinText}>+{win.rewardAmount - win.coinAmount}</Text>
+                    </View>
+                  </View>
+                ))
+              )
+            ) : myEntry ? (
+              <View style={[styles.playerRow, styles.userPlayerRow]}>
                 <View style={styles.playerInfo}>
-                  <Text style={styles.playerAvatar}>{player.avatar}</Text>
-                  <Text style={[styles.playerName, player.isUser && styles.userNameText]}>
-                    {player.name}
-                  </Text>
-                  {player.isUser && (
-                    <View style={styles.youBadge}>
-                      <Text style={styles.youBadgeText}>YOU</Text>
-                    </View>
-                  )}
+                  <Text style={styles.playerAvatar}>👑</Text>
+                  <Text style={[styles.playerName, styles.userNameText]}>You</Text>
+                  <View style={styles.youBadge}>
+                    <Text style={styles.youBadgeText}>YOU</Text>
+                  </View>
                 </View>
-
                 <View style={styles.playerStatus}>
-                  {player.status === 'CASHED_OUT' ? (
+                  {myEntry.status === 'WON' ? (
                     <View style={styles.cashedOutTag}>
-                      <Text style={styles.cashedOutTagText}>{player.targetMultiplier.toFixed(2)}×</Text>
+                      <Text style={styles.cashedOutTagText}>{(myEntry.cashedOutMultiplier ?? 1).toFixed(2)}×</Text>
                     </View>
-                  ) : player.status === 'BUST' ? (
+                  ) : myEntry.status === 'LOST' ? (
                     <Text style={styles.bustText}>BUST</Text>
                   ) : (
                     <Text style={styles.inPlayText}>IN PLAY</Text>
                   )}
                 </View>
-
                 <View style={styles.playerPayout}>
-                  <Text style={styles.playerBetText}>{player.amount} COINS</Text>
-                  {player.status === 'CASHED_OUT' && (
-                    <Text style={styles.playerWinText}>+{player.profit?.toFixed(1)}</Text>
+                  <Text style={styles.playerBetText}>{myEntry.coinAmount} COINS</Text>
+                  {myEntry.status === 'WON' && (
+                    <Text style={styles.playerWinText}>+{myEntry.rewardAmount - myEntry.coinAmount}</Text>
                   )}
                 </View>
               </View>
-            ))}
+            ) : (
+              <Text style={styles.emptyTableText}>You haven't placed a bet this round.</Text>
+            )}
           </View>
         </View>
       </ScrollView>
 
-      {/* Provably Fair Modal */}
+      {/* Provably Fair Modal — real commitment hash / revealed secret from
+          GameRound, not a fabricated hash string. */}
       <Modal
         visible={!!selectedFairnessRound}
         transparent
@@ -899,29 +1016,37 @@ export function CrashScreen() {
             {selectedFairnessRound && (
               <View style={styles.modalBody}>
                 <View style={styles.fairResultBox}>
-                  <Text style={styles.fairResultLabel}>Round #{selectedFairnessRound.roundNumber} Result</Text>
-                  <Text style={[styles.fairResultVal, { color: getMultiplierColor(selectedFairnessRound.multiplier) }]}>
-                    {selectedFairnessRound.multiplier.toFixed(2)}×
+                  <Text style={styles.fairResultLabel}>Round #{selectedFairnessRound.id.slice(0, 6).toUpperCase()} Result</Text>
+                  <Text
+                    style={[
+                      styles.fairResultVal,
+                      { color: getMultiplierColor((selectedFairnessRound.result as { crashPoint?: number } | null)?.crashPoint ?? 0) },
+                    ]}
+                  >
+                    {((selectedFairnessRound.result as { crashPoint?: number } | null)?.crashPoint ?? 0).toFixed(2)}×
                   </Text>
                 </View>
 
                 <View style={styles.fieldBlock}>
-                  <Text style={styles.fieldBlockLabel}>Server Seed (SHA256 Hash)</Text>
-                  <Text style={styles.fieldBlockVal}>{selectedFairnessRound.hash}</Text>
+                  <Text style={styles.fieldBlockLabel}>Commitment Hash (published before this round opened)</Text>
+                  <Text style={styles.fieldBlockVal}>{selectedFairnessRound.commitmentHash ?? '—'}</Text>
                 </View>
 
                 <View style={styles.fieldBlock}>
-                  <Text style={styles.fieldBlockLabel}>Client Seed</Text>
-                  <Text style={styles.fieldBlockVal}>{selectedFairnessRound.clientSeed}</Text>
+                  <Text style={styles.fieldBlockLabel}>Revealed Secret (published after settlement)</Text>
+                  <Text style={styles.fieldBlockVal}>{selectedFairnessRound.revealData ?? '—'}</Text>
                 </View>
 
                 <View style={styles.fieldBlock}>
-                  <Text style={styles.fieldBlockLabel}>Nonce</Text>
-                  <Text style={styles.fieldBlockVal}>{selectedFairnessRound.nonce}</Text>
+                  <Text style={styles.fieldBlockLabel}>Settled At</Text>
+                  <Text style={styles.fieldBlockVal}>
+                    {selectedFairnessRound.settledAt ? new Date(selectedFairnessRound.settledAt).toLocaleString() : '—'}
+                  </Text>
                 </View>
 
                 <Text style={styles.fairNotice}>
-                  Every round outcome is cryptographically generated before takeoff with 99% theoretical RTP.
+                  The crash point is generated server-side with a cryptographically secure RNG before the round opens,
+                  and is never sent to any client until after it has crashed.
                 </Text>
               </View>
             )}
@@ -929,7 +1054,7 @@ export function CrashScreen() {
         </Pressable>
       </Modal>
 
-      {/* Trends Statistics Modal */}
+      {/* Trends Statistics Modal — real stats from settled rounds */}
       <Modal
         visible={showTrends}
         transparent
@@ -955,35 +1080,31 @@ export function CrashScreen() {
               <View style={styles.trendsStatsRow}>
                 <View style={styles.statBox}>
                   <Text style={styles.statBoxLabel}>Max Multiplier</Text>
-                  <Text style={[styles.statBoxVal, { color: BC_COLORS.accentGold }]}>
-                    {Math.max(...history.map((h) => h.multiplier)).toFixed(2)}×
-                  </Text>
+                  <Text style={[styles.statBoxVal, { color: BC_COLORS.accentGold }]}>{trendStats.max.toFixed(2)}×</Text>
                 </View>
                 <View style={styles.statBox}>
                   <Text style={styles.statBoxLabel}>Median</Text>
-                  <Text style={[styles.statBoxVal, { color: BC_COLORS.accentGreen }]}>
-                    2.14×
-                  </Text>
+                  <Text style={[styles.statBoxVal, { color: BC_COLORS.accentGreen }]}>{trendStats.median.toFixed(2)}×</Text>
                 </View>
               </View>
 
               <View style={styles.distributionBox}>
-                <Text style={styles.distTitle}>Distribution (Last {history.length} Rounds)</Text>
+                <Text style={styles.distTitle}>Distribution (Last {settledRounds.length} Rounds)</Text>
                 <View style={styles.distRow}>
                   <Text style={styles.distLabel}>&lt; 2.00× (Low)</Text>
-                  <Text style={styles.distPct}>48%</Text>
+                  <Text style={styles.distPct}>{trendStats.low}%</Text>
                 </View>
                 <View style={styles.distRow}>
                   <Text style={[styles.distLabel, { color: BC_COLORS.accentGreen }]}>2.00× - 9.99× (Target)</Text>
-                  <Text style={styles.distPct}>39%</Text>
+                  <Text style={styles.distPct}>{trendStats.mid}%</Text>
                 </View>
                 <View style={styles.distRow}>
                   <Text style={[styles.distLabel, { color: BC_COLORS.accentGold }]}>10.00× - 99.99× (High)</Text>
-                  <Text style={styles.distPct}>11%</Text>
+                  <Text style={styles.distPct}>{trendStats.high}%</Text>
                 </View>
                 <View style={styles.distRow}>
                   <Text style={[styles.distLabel, { color: BC_COLORS.accentPurple }]}>100.00×+ (Jackpot)</Text>
-                  <Text style={styles.distPct}>2%</Text>
+                  <Text style={styles.distPct}>{trendStats.jackpot}%</Text>
                 </View>
               </View>
 
@@ -1025,7 +1146,7 @@ export function CrashScreen() {
                 <Text style={styles.helpStepNum}>1</Text>
                 <View style={{ flex: 1 }}>
                   <Text style={styles.helpStepTitle}>Place Your Wager</Text>
-                  <Text style={styles.helpStepDesc}>Choose your bet amount before takeoff or configure auto cash out.</Text>
+                  <Text style={styles.helpStepDesc}>Choose your bet amount while the round is open, or configure auto cash out.</Text>
                 </View>
               </View>
 
@@ -1033,7 +1154,7 @@ export function CrashScreen() {
                 <Text style={styles.helpStepNum}>2</Text>
                 <View style={{ flex: 1 }}>
                   <Text style={styles.helpStepTitle}>Watch the Multiplier Climb</Text>
-                  <Text style={styles.helpStepDesc}>The rocket begins at 1.00× and climbs exponentially.</Text>
+                  <Text style={styles.helpStepDesc}>The rocket begins at 1.00× and climbs exponentially, computed live on the server.</Text>
                 </View>
               </View>
 
@@ -1065,8 +1186,8 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 16,
-    paddingVertical: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
     borderBottomWidth: 1,
     borderColor: BC_COLORS.border,
   },
@@ -1105,7 +1226,7 @@ const styles = StyleSheet.create({
     borderColor: BC_COLORS.border,
   },
   walletText: { color: BC_COLORS.textWhite, fontWeight: '800', fontSize: 11, fontFamily: 'monospace' },
-  scrollContent: { padding: 14, gap: 14, alignItems: 'center' },
+  scrollContent: { padding: 10, gap: 10, alignItems: 'center' },
 
   // Ribbon
   ribbonContainer: {
@@ -1145,7 +1266,7 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     borderWidth: 1,
     borderColor: BC_COLORS.border,
-    padding: 12,
+    padding: 10,
     justifyContent: 'space-between',
     overflow: 'hidden',
   },
@@ -1168,21 +1289,21 @@ const styles = StyleSheet.create({
   statusText: { color: BC_COLORS.textWhite, fontSize: 9, fontWeight: '800' },
   networkStat: { color: BC_COLORS.textDim, fontSize: 9, fontWeight: '700' },
   hudCenter: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     justifyContent: 'center',
     alignItems: 'center',
     zIndex: 10,
   },
   countdownBox: { alignItems: 'center', gap: 4 },
   countdownTitle: { color: BC_COLORS.textMuted, fontSize: 10, fontWeight: '800', letterSpacing: 1 },
-  countdownNumber: { color: BC_COLORS.accentGreen, fontSize: 44, fontWeight: '900', fontFamily: 'monospace' },
+  countdownNumber: { color: BC_COLORS.accentGreen, fontSize: 38, fontWeight: '900', fontFamily: 'monospace' },
   countdownBarBg: { width: 140, height: 4, backgroundColor: 'rgba(255,255,255,0.1)', borderRadius: 2, overflow: 'hidden' },
   countdownBarFill: { height: '100%', backgroundColor: BC_COLORS.accentGreen },
   crashedBox: { alignItems: 'center' },
   crashedLabel: { color: BC_COLORS.accentRed, fontSize: 18, fontWeight: '900', letterSpacing: 2 },
-  crashedMultiplier: { color: BC_COLORS.accentRed, fontSize: 46, fontWeight: '900', fontFamily: 'monospace' },
+  crashedMultiplier: { color: BC_COLORS.accentRed, fontSize: 40, fontWeight: '900', fontFamily: 'monospace' },
   multiplierBox: { alignItems: 'center' },
-  multiplierMain: { fontSize: 52, fontWeight: '900', fontFamily: 'monospace', lineHeight: 60 },
+  multiplierMain: { fontSize: 44, fontWeight: '900', fontFamily: 'monospace', lineHeight: 52 },
   multiplierX: { fontSize: 32 },
   liveProfitPill: {
     backgroundColor: 'rgba(0,231,1,0.2)',
@@ -1211,8 +1332,8 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     borderWidth: 1,
     borderColor: BC_COLORS.border,
-    padding: 16,
-    gap: 14,
+    padding: 12,
+    gap: 10,
   },
   modeTabBar: {
     flexDirection: 'row',
@@ -1233,7 +1354,7 @@ const styles = StyleSheet.create({
   modeTabText: { color: BC_COLORS.textDim, fontSize: 12, fontWeight: '700' },
   modeTabTextActive: { color: BC_COLORS.accentGreen },
 
-  manualControls: { gap: 14 },
+  manualControls: { gap: 10 },
   inputGroup: { gap: 6 },
   inputLabelRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   inputLabel: { color: BC_COLORS.textMuted, fontSize: 11, fontWeight: '700' },
@@ -1282,7 +1403,7 @@ const styles = StyleSheet.create({
 
   bigBtn: {
     borderRadius: 14,
-    paddingVertical: 15,
+    paddingVertical: 12,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -1359,6 +1480,7 @@ const styles = StyleSheet.create({
   tableTabText: { color: BC_COLORS.textDim, fontSize: 11, fontWeight: '700' },
   tableTabTextActive: { color: BC_COLORS.accentGreen },
   tableContent: { gap: 4 },
+  emptyTableText: { color: BC_COLORS.textDim, fontSize: 11, textAlign: 'center', paddingVertical: 12 },
   playerRow: {
     flexDirection: 'row',
     alignItems: 'center',

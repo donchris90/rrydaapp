@@ -29,7 +29,7 @@ interface Props {
   visible: boolean;
   onClose: () => void;
   recipientId: string;
-  context: 'LIVE' | 'ROOM';
+  context: 'LIVE' | 'ROOM' | 'VIDEO';
   contextId: string;
   recipientName?: string;
 }
@@ -109,7 +109,9 @@ export function GiftSheet({
     if (!visible) return null;
 
   return (
-    <View style={StyleSheet.absoluteFill} pointerEvents="box-none">
+    // zIndex + elevation: on Android the chat overlay could draw OVER this sheet
+    // (elevation decides, not just order in the tree), hiding part of the gift panel.
+    <View style={[StyleSheet.absoluteFill, { zIndex: 1000, elevation: 1000 }]} pointerEvents="box-none">
       <Pressable style={styles.overlay} onPress={onClose}>
         <Pressable
           style={[styles.sheet, { paddingBottom: insets.bottom + spacing.sm }]}
@@ -190,7 +192,7 @@ export function GiftSheet({
                     }}
                   >
                     <View style={styles.giftIconBox}>
-                      <Ionicons name="gift" size={30} color="#FF1493" />
+                      {item.icon ? <Text style={{ fontSize: 30 }}>{item.icon}</Text> : <Ionicons name="gift" size={30} color="#FF1493" />}
                     </View>
                     <Text style={styles.giftName} numberOfLines={1}>
                       {item.name}

@@ -1,142 +1,255 @@
-import React, { useState } from 'react';
-import { X, History, ShieldCheck, Copy, Check } from 'lucide-react';
-import type { DiceRoundHistory } from '../../types';
+import React from 'react';
+import { View, Text, StyleSheet, Modal, Pressable, FlatList } from 'react-native';
+import { colors } from './luckyNumberTheme';
+import type { DiceRoundHistory } from './luckyNumberTypes';
 
 interface DiceHistoryModalProps {
-  isOpen: boolean;
+  visible: boolean;
   history: DiceRoundHistory[];
   onClose: () => void;
 }
 
-export function DiceHistoryModal({ isOpen, history, onClose }: DiceHistoryModalProps) {
-  const [copiedHash, setCopiedHash] = useState<string | null>(null);
-
-  if (!isOpen) return null;
-
-  const copyHash = (hash: string) => {
-    navigator.clipboard.writeText(hash);
-    setCopiedHash(hash);
-    setTimeout(() => setCopiedHash(null), 2000);
-  };
-
+export function DiceHistoryModal({ visible, history, onClose }: DiceHistoryModalProps) {
   return (
-    <div
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm animate-in fade-in duration-200"
+    <Modal
+      visible={visible}
+      transparent
+      animationType="slide"
+      onRequestClose={onClose}
     >
-      <div className="relative w-full max-w-2xl bg-[#242D3D] rounded-2xl border border-white/10 p-6 shadow-2xl flex flex-col gap-4 text-white max-h-[85vh]">
-        {/* Header */}
-        <div className="flex items-center justify-between border-b border-white/10 pb-4">
-          <div className="flex items-center gap-2.5">
-            <div className="w-9 h-9 rounded-xl bg-[#FFB800]/15 border border-[#FFB800]/30 flex items-center justify-center text-[#FFB800]">
-              <History className="w-5 h-5" />
-            </div>
-            <div>
-              <h2 className="text-base font-bold text-white">Lucky Number Round History</h2>
-              <p className="text-xs text-white/60">Cryptographic audit & outcomes of past rounds</p>
-            </div>
-          </div>
-          <button
-            onClick={onClose}
-            className="w-8 h-8 rounded-lg bg-white/5 hover:bg-white/10 flex items-center justify-center text-white/70 hover:text-white transition-colors cursor-pointer"
-          >
-            <X className="w-4 h-4" />
-          </button>
-        </div>
+      <View style={styles.modalOverlay}>
+        <View style={styles.modalContainer}>
+          {/* Header */}
+          <View style={styles.header}>
+            <Text style={styles.title}>Round History & Trends</Text>
+            <Pressable onPress={onClose} style={styles.closeBtn}>
+              <Text style={styles.closeText}>✕</Text>
+            </Pressable>
+          </View>
 
-        {/* Table Content */}
-        <div className="flex flex-col gap-2 overflow-y-auto pr-1 no-scrollbar flex-1">
-          <div className="grid grid-cols-12 text-[11px] font-bold text-white/40 uppercase tracking-wider px-3 py-1">
-            <span className="col-span-3">Round / Time</span>
-            <span className="col-span-3 text-center">3 Digits</span>
-            <span className="col-span-2 text-center">Sum</span>
-            <span className="col-span-2 text-center">Category</span>
-            <span className="col-span-2 text-right">Pool</span>
-          </div>
+          {/* Quick Stats Summary */}
+          <View style={styles.statsSummaryRow}>
+            <View style={styles.statBox}>
+              <Text style={styles.statVal}>
+                {history.filter((h) => h.isSmall).length}
+              </Text>
+              <Text style={styles.statLbl}>Small (0-13)</Text>
+            </View>
+            <View style={styles.statBox}>
+              <Text style={styles.statVal}>
+                {history.filter((h) => !h.isSmall).length}
+              </Text>
+              <Text style={styles.statLbl}>Big (14-27)</Text>
+            </View>
+            <View style={styles.statBox}>
+              <Text style={styles.statVal}>
+                {history.filter((h) => h.isEven).length}
+              </Text>
+              <Text style={styles.statLbl}>Even</Text>
+            </View>
+            <View style={styles.statBox}>
+              <Text style={styles.statVal}>
+                {history.filter((h) => !h.isEven).length}
+              </Text>
+              <Text style={styles.statLbl}>Odd</Text>
+            </View>
+          </View>
 
-          {history.length === 0 ? (
-            <div className="py-8 text-center text-xs text-white/40">No settled rounds yet.</div>
-          ) : (
-            history.map((item) => (
-              <div
-                key={item.id}
-                className="grid grid-cols-12 items-center px-3 py-2.5 rounded-xl bg-[#192230] border border-white/5 hover:border-white/10 text-xs font-mono transition-all"
-              >
-                {/* Round Number */}
-                <div className="col-span-3 flex flex-col">
-                  <span className="font-bold text-white">#{item.roundNumber}</span>
-                  <span className="text-[10px] text-white/40">
-                    {new Date(item.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                  </span>
-                </div>
+          {/* History List */}
+          <FlatList
+            data={history}
+            keyExtractor={(item) => item.id}
+            contentContainerStyle={styles.listContent}
+            renderItem={({ item }) => (
+              <View style={styles.historyRow}>
+                <View style={styles.roundInfoCol}>
+                  <Text style={styles.roundNum}>#{item.roundNumber}</Text>
+                  <Text style={styles.diceDetail}>
+                    {item.dice[0]} + {item.dice[1]} + {item.dice[2]}
+                  </Text>
+                </View>
 
-                {/* 3 Digits */}
-                <div className="col-span-3 flex items-center justify-center gap-1">
-                  {item.dice.map((d, idx) => (
-                    <span
-                      key={idx}
-                      className="w-6 h-6 rounded-md bg-[#242D3D] border border-white/10 flex items-center justify-center font-bold text-white"
-                    >
-                      {d}
-                    </span>
-                  ))}
-                </div>
+                {/* Sum Badge */}
+                <View style={styles.sumBadge}>
+                  <Text style={styles.sumText}>{item.sum}</Text>
+                </View>
 
-                {/* Sum */}
-                <div className="col-span-2 flex justify-center">
-                  <span className="px-2.5 py-0.5 rounded-full bg-[#FFB800]/20 text-[#FFB800] font-black">
-                    {item.sum}
-                  </span>
-                </div>
-
-                {/* Category */}
-                <div className="col-span-2 flex justify-center gap-1 text-[11px]">
-                  <span className="px-1.5 py-0.5 rounded bg-white/10 text-white font-bold">
-                    {item.size}
-                  </span>
-                  <span className="px-1.5 py-0.5 rounded bg-white/10 text-white font-bold">
-                    {item.parity}
-                  </span>
-                </div>
-
-                {/* Pool & Copy Hash */}
-                <div className="col-span-2 flex items-center justify-end gap-1.5">
-                  <span className="font-bold text-white/90">
-                    {item.totalPool.toLocaleString()}
-                  </span>
-                  <button
-                    onClick={() => copyHash(item.hash)}
-                    className="p-1 rounded hover:bg-white/10 text-white/40 hover:text-[#00E701] transition-colors cursor-pointer"
-                    title={`Copy SHA-256 Hash: ${item.hash}`}
+                {/* Badges */}
+                <View style={styles.tagsCol}>
+                  <View
+                    style={[
+                      styles.tagPill,
+                      item.isSmall ? styles.tagSmall : styles.tagBig,
+                    ]}
                   >
-                    {copiedHash === item.hash ? (
-                      <Check className="w-3.5 h-3.5 text-[#00E701]" />
-                    ) : (
-                      <Copy className="w-3.5 h-3.5" />
-                    )}
-                  </button>
-                </div>
-              </div>
-            ))
-          )}
-        </div>
+                    <Text style={styles.tagText}>
+                      {item.isSmall ? 'S' : 'B'}
+                    </Text>
+                  </View>
+                  <View
+                    style={[
+                      styles.tagPill,
+                      item.isEven ? styles.tagEven : styles.tagOdd,
+                    ]}
+                  >
+                    <Text style={styles.tagText}>
+                      {item.isEven ? 'E' : 'O'}
+                    </Text>
+                  </View>
+                </View>
 
-        {/* Footer info note */}
-        <div className="p-3 bg-[#192230] rounded-xl border border-white/10 text-[11px] text-white/60 flex items-center justify-between">
-          <div className="flex items-center gap-1.5">
-            <ShieldCheck className="w-4 h-4 text-[#00E701]" />
-            <span>All rounds cryptographically verifiable with HMAC-SHA256</span>
-          </div>
-          <button
-            onClick={onClose}
-            className="px-4 py-1.5 rounded-lg bg-[#2E394E] hover:bg-[#3B4862] text-xs font-bold text-white transition-colors cursor-pointer"
-          >
-            Close
-          </button>
-        </div>
-      </div>
-    </div>
+                {/* Provably fair hash sample */}
+                <View style={styles.hashCol}>
+                  <Text style={styles.hashText} numberOfLines={1}>
+                    {item.hash.substring(0, 10)}...
+                  </Text>
+                </View>
+              </View>
+            )}
+          />
+        </View>
+      </View>
+    </Modal>
   );
 }
+
+const styles = StyleSheet.create({
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.75)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 16,
+  },
+  modalContainer: {
+    width: '100%',
+    maxWidth: 400,
+    maxHeight: '80%',
+    backgroundColor: '#1E2563',
+    borderRadius: 20,
+    borderWidth: 1.5,
+    borderColor: 'rgba(96, 165, 250, 0.4)',
+    overflow: 'hidden',
+  },
+  header: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255, 255, 255, 0.1)',
+  },
+  title: {
+    color: '#FFFFFF',
+    fontSize: 18,
+    fontWeight: '800',
+  },
+  closeBtn: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  closeText: {
+    color: '#94A3B8',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  statsSummaryRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+    paddingVertical: 12,
+    backgroundColor: '#141A4B',
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255, 255, 255, 0.08)',
+  },
+  statBox: {
+    alignItems: 'center',
+  },
+  statVal: {
+    color: '#FACC15',
+    fontSize: 16,
+    fontWeight: '800',
+  },
+  statLbl: {
+    color: '#94A3B8',
+    fontSize: 10,
+    marginTop: 2,
+  },
+  listContent: {
+    padding: 12,
+    gap: 8,
+  },
+  historyRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#273180',
+    padding: 10,
+    borderRadius: 12,
+  },
+  roundInfoCol: {
+    width: 65,
+  },
+  roundNum: {
+    color: '#F8FAFC',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  diceDetail: {
+    color: '#94A3B8',
+    fontSize: 10,
+  },
+  sumBadge: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: '#38BDF8',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  sumText: {
+    color: '#082F49',
+    fontSize: 14,
+    fontWeight: '900',
+  },
+  tagsCol: {
+    flexDirection: 'row',
+    gap: 5,
+  },
+  tagPill: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  tagSmall: {
+    backgroundColor: '#3B82F6',
+  },
+  tagBig: {
+    backgroundColor: '#EC4899',
+  },
+  tagEven: {
+    backgroundColor: '#8B5CF6',
+  },
+  tagOdd: {
+    backgroundColor: '#F59E0B',
+  },
+  tagText: {
+    color: '#FFFFFF',
+    fontSize: 11,
+    fontWeight: '800',
+  },
+  hashCol: {
+    width: 75,
+    alignItems: 'flex-end',
+  },
+  hashText: {
+    color: '#64748B',
+    fontSize: 10,
+    fontFamily: 'monospace',
+  },
+});

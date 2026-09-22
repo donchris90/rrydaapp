@@ -37,7 +37,7 @@ export function ViewerPickerSheet({
     if (!visible) return null;
 
   return (
-    <View style={StyleSheet.absoluteFill} pointerEvents="box-none">
+    <View style={[StyleSheet.absoluteFill, { zIndex: 1000, elevation: 1000 }]} pointerEvents="box-none">
       <Pressable style={styles.overlay} onPress={onClose}>
         <Pressable
           style={[styles.sheet, { paddingBottom: insets.bottom + spacing.md }]}
@@ -86,7 +86,7 @@ export function ViewerPickerSheet({
                   style={styles.viewerRow}
                   onPress={() => onSelect(item)}
                 >
-                  <Avatar uri={undefined} size={40} />
+                  <Avatar name={item.displayName} size={40} />
                   <View style={styles.viewerText}>
                     <Text style={styles.viewerName} numberOfLines={1}>
                       {item.displayName ?? 'Anonymous'}

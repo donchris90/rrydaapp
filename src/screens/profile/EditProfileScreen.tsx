@@ -6,17 +6,16 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useMutation } from '@tanstack/react-query';
 import * as ImagePicker from 'expo-image-picker';
 import { updateDisplayName, updateAvatarUrl } from '../../api/auth';
-import { uploadImageToImgBB } from '../../api/imgbb';
+import { uploadImage } from '../../api/uploads';
 import { useAuth } from '../../auth/AuthContext';
 import { GradientBackground } from '../../components/GradientBackground';
 import { GradientButton } from '../../components/GradientButton';
 import { Avatar } from '../../components/Avatar';
 import { colors, radii, spacing, type } from '../../theme';
 
-// displayName and avatarUrl are the two fields a user can actually edit
-// themselves — checked the real Prisma schema before building either:
-// no bio field exists at all. email/phone/countryCode are identity
-// fields, not self-editable; kycVerified/status/roles are admin-controlled.
+// displayName and avatarUrl are edited here; bio is edited inline on the
+// profile's Bio card. email/phone/countryCode are identity fields, not
+// self-editable; kycVerified/status/roles are admin-controlled.
 export function EditProfileScreen() {
   const navigation = useNavigation();
   const insets = useSafeAreaInsets();
@@ -52,11 +51,11 @@ export function EditProfileScreen() {
 
     setIsUploadingAvatar(true);
     try {
-      const url = await uploadImageToImgBB(result.assets[0].base64);
+      const url = await uploadImage(result.assets[0].base64);
       await updateAvatarUrl(url);
       await refreshUser();
     } catch (error: any) {
-      Alert.alert('Could not update photo', error?.message ?? 'Something went wrong. Try again.');
+      Alert.alert('Could not update photo', error?.response?.data?.message ?? error?.message ?? 'Something went wrong. Try again.');
     } finally {
       setIsUploadingAvatar(false);
     }

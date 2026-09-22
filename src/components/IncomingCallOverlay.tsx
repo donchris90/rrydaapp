@@ -4,6 +4,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useIncomingCallListener } from '../live/useIncomingCallListener';
+import { useDirectMessagePush } from '../live/useDirectMessagePush';
 import { declineCall } from '../api/calls';
 import { Avatar } from './Avatar';
 import { colors, radii, spacing, type } from '../theme';
@@ -12,10 +13,12 @@ import type { AppStackParamList } from '../navigation/types';
 // Rendered once, at the app root (alongside the Stack.Navigator, not
 // inside any one screen) — an incoming call can arrive while the user
 // is anywhere in the app, so this can't live inside ConversationScreen
-// or any single route.
+// or any single route. For the same reason it also hosts the app-wide
+// direct-message push listener (it renders nothing for that).
 export function IncomingCallOverlay() {
   const navigation = useNavigation<NativeStackNavigationProp<AppStackParamList>>();
   const { incomingCall, dismissIncomingCall } = useIncomingCallListener();
+  useDirectMessagePush();
 
   if (!incomingCall) return null;
 

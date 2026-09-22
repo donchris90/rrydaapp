@@ -2,7 +2,7 @@
   "expo": {
     "name": "platform-mobile",
     "slug": "platform-mobile",
-    "newArchEnabled": false,
+    "newArchEnabled": true,
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -27,19 +27,28 @@
         "RECORD_AUDIO",
         "MODIFY_AUDIO_SETTINGS"
       ],
-      "package": "com.ryda90.platformmobile"
+      "package": "com.ryda90.platformmobile",
+      "versionCode": 1
     },
     "web": {
       "favicon": "./assets/favicon.png"
     },
     "plugins": [
       "expo-dev-client",
-      "expo-secure-store"
+      "expo-secure-store",
+      "expo-notifications",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "RRYDA uses the camera to record your videos and to go live.",
+          "microphonePermission": "RRYDA uses the microphone to record sound with your videos.",
+          "recordAudioAndroid": true
+        }
+      ]
     ],
     "extra": {
-      "apiBaseUrl": "http://192.168.18.3:3000/api/v1",
+      "apiBaseUrl": "https://bipo-1.onrender.com/api/v1",
       "agoraAppId": "482c0ea270be4aa8adff952ceb592bd8",
-      "imgbbApiKey": "fc543022e03ac534d0e12ea2435c43b7",
       "eas": {
         "projectId": "327e4aef-c085-4055-a4be-ef7160cdd89b"
       }

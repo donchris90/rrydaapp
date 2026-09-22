@@ -2,7 +2,9 @@ import React, { useEffect, useState } from 'react';
 import { View, Text, Pressable, StyleSheet, Alert } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { fetchFollowingList, followUser, unfollowUser } from '../api/social';
+import { followUser, unfollowUser } from '../api/social';
+import { fetchProfile } from '../api/profiles';
+import { useProfileSheet } from '../context/ProfileSheetContext';
 import { Avatar } from './Avatar';
 import { colors, spacing, radii, type } from '../theme';
 
@@ -31,43 +33,56 @@ export function LiveHeaderBar({
   startedAt,
   isOwnSession,
   onClose,
+  onAvatarPosition,
 }: {
   hostId: string;
   hostName: string;
   startedAt: string | null;
   isOwnSession: boolean;
   onClose: () => void;
+  // Where the host's photo is on screen (window coordinates), so a gift can fly to it.
+  onAvatarPosition?: (p: { x: number; y: number }) => void;
 }) {
   const queryClient = useQueryClient();
   const elapsed = useElapsedTime(startedAt);
 
-  const followingQuery = useQuery({
-    queryKey: ['social', 'following'],
-    queryFn: fetchFollowingList,
-    enabled: !isOwnSession, // no point checking follow status on your own stream
-  });
-  const isFollowing = followingQuery.data?.some((u) => u.id === hostId) ?? false;
+  // The host's real name and photo (the header used to show the stream's TITLE as
+  // the name). Also tells us whether you already follow them.
+  const profileQuery = useQuery({ queryKey: ['profile', hostId], queryFn: () => fetchProfile(hostId), enabled: !!hostId, retry: false });
+  const isFollowing = profileQuery.data?.isFollowing ?? false;
+  const displayName = profileQuery.data?.displayName ?? hostName;
+  const profileSheet = useProfileSheet();
+  const avatarRef = React.useRef<View>(null);
 
   const followMutation = useMutation({
     mutationFn: () => (isFollowing ? unfollowUser(hostId) : followUser(hostId)),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['social', 'following'] }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['profile', hostId] });
+      queryClient.invalidateQueries({ queryKey: ['social'] });
+    },
     onError: () => {
-      // Same silent-failure gap as GoLiveScreen's endMutation — tapping
-      // follow/unfollow with no visible result if the request failed is
-      // exactly as confusing as an unresponsive "End session" button.
       Alert.alert('Something went wrong', 'Could not update follow status. Try again.');
     },
   });
 
   return (
     <View style={styles.container}>
-      <Avatar name={hostName} size={36} />
-      <View style={styles.info}>
-        <Text style={styles.name} numberOfLines={1}>
-          {hostName}
-        </Text>
-        <Text style={styles.elapsed}>{elapsed}</Text>
-      </View>
+      {/* Tap the host (photo or name) to see their profile and follow them. */}
+      <Pressable style={styles.hostTap} onPress={() => profileSheet.open(hostId)} accessibilityLabel={`${displayName}'s profile`}>
+        <View
+          ref={avatarRef}
+          collapsable={false}
+          onLayout={() => avatarRef.current?.measureInWindow((x, y, w, h) => onAvatarPosition?.({ x: x + w / 2, y: y + h / 2 }))}
+        >
+          <Avatar name={displayName} size={36} imageUrl={profileQuery.data?.avatarUrl} />
+        </View>
+        <View style={styles.info}>
+          <Text style={styles.name} numberOfLines={1}>
+            {displayName}
+          </Text>
+          <Text style={styles.elapsed}>{elapsed}</Text>
+        </View>
+      </Pressable>
 
       {!isOwnSession && (
         <Pressable
@@ -87,6 +102,7 @@ export function LiveHeaderBar({
 }
 
 const styles = StyleSheet.create({
+  hostTap: { flexDirection: 'row', alignItems: 'center', gap: 8, flexShrink: 1 },
   container: {
     flexDirection: 'row',
     alignItems: 'center',

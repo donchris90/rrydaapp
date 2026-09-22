@@ -2,6 +2,7 @@ import React, { createContext, useContext, useEffect, useState, useCallback } fr
 import { apiClient, setAccessToken, setOnAuthFailure } from '../api/client';
 import { getRefreshToken, saveRefreshToken, clearRefreshToken } from './tokenStorage';
 import * as authApi from '../api/auth';
+import { unregisterCurrentPushToken } from '../push/pushRegistration';
 import type { CurrentUser } from '../api/types';
 
 interface AuthContextValue {
@@ -55,24 +56,47 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   // endpoint is called directly rather than relying on client.ts's 401
   // interceptor — at startup there's no failed request to retry yet.
   useEffect(() => {
-    (async () => {
-      const stored = await getRefreshToken();
-      if (!stored) {
+    let cancelled = false;
+
+    // Never leave the entire app behind the startup spinner if SecureStore
+    // or the API is unavailable. A mobile app must fail open to the login
+    // screen rather than appearing frozen forever.
+    const startupTimeout = setTimeout(() => {
+      if (!cancelled) {
+        clearSession();
         setIsLoading(false);
-        return;
       }
+    }, 12000);
+
+    (async () => {
       try {
-        const refreshResponse = await apiClient.post('/auth/refresh', { refreshToken: stored });
-        await applyAuthResult(refreshResponse.data);
+        const stored = await getRefreshToken();
+        if (!stored) {
+          if (!cancelled) setIsLoading(false);
+          return;
+        }
+
+        try {
+          const refreshResponse = await apiClient.post('/auth/refresh', { refreshToken: stored });
+          await applyAuthResult(refreshResponse.data);
+        } catch {
+          // Stored refresh token is invalid/expired/already used, or the
+          // backend is unavailable. Treat the session as signed out so the
+          // app remains usable instead of hanging on the splash spinner.
+          await clearRefreshToken();
+          clearSession();
+        }
       } catch {
-        // Stored refresh token is invalid/expired/already used — treat it
-        // the same as no session at all.
-        await clearRefreshToken();
         clearSession();
       } finally {
-        setIsLoading(false);
+        if (!cancelled) setIsLoading(false);
       }
     })();
+
+    return () => {
+      cancelled = true;
+      clearTimeout(startupTimeout);
+    };
   }, [applyAuthResult, clearSession]);
 
   const login = useCallback(
@@ -92,6 +116,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   );
 
   const logout = useCallback(async () => {
+    // First, while the session is still valid: stop this device receiving the
+    // signed-out account's push notifications.
+    await unregisterCurrentPushToken();
     if (refreshTokenValue) {
       try {
         await authApi.logout(refreshTokenValue);

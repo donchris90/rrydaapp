@@ -21,6 +21,7 @@ export interface CurrentUser {
   kycVerified: boolean;
   referralCode: string;
   avatarUrl: string | null;
+  bio: string | null;
 }
 
 export interface Referral {
@@ -34,6 +35,7 @@ export interface SocialStats {
   following: number;
   followers: number;
   pkWins: number;
+  pkLosses: number;
 }
 
 // Null means "not in an agency," distinct from the query still loading.
@@ -49,6 +51,8 @@ export interface AgencyMembership {
 export interface WalletBalances {
   coin: string; // BigInt serialized as string by the backend — see wallet.service.ts
   creatorEarnings: string;
+  // Mission rewards and other non-withdrawable bonus coins.
+  bonus: string;
 }
 
 export interface FeedUser {
@@ -68,6 +72,8 @@ export interface LiveNowSession {
   id: string;
   hostId: string;
   hostDisplayName: string | null;
+  // The host's profile photo — the thumbnail when they didn't choose a cover.
+  hostAvatarUrl: string | null;
   title: string;
   category: string | null;
   coverUrl: string | null;

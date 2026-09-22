@@ -1,3 +1,4 @@
+import { describeApiError } from '../../api/errors';
 import React, { useState } from 'react';
 import {
   Alert,
@@ -82,9 +83,12 @@ export function PreRoomScreen() {
     mutationFn: () =>
       createRoom({
         title: title.trim() || 'Party Room',
+        // Always send a real value (an empty one used to reach the database and fail).
+        privacy: 'PUBLIC',
         seatCount,
         category: category ?? undefined,
         themeColor: route.params?.initialThemeColor,
+        mode: mode === 'video' ? 'VIDEO' : 'AUDIO',
       }),
     onSuccess: (room) => {
       navigation.replace('Room', {
@@ -93,10 +97,7 @@ export function PreRoomScreen() {
       });
     },
     onError: (err: any) => {
-      Alert.alert(
-        'Could not start party',
-        err?.response?.data?.message ?? 'Something went wrong'
-      );
+      Alert.alert('Could not start party', describeApiError(err, 'Something went wrong'));
     },
   });
 
@@ -304,7 +305,7 @@ export function PreRoomScreen() {
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: '#000' },
-  voiceBackdrop: { backgroundColor: '#1A1332' },
+  voiceBackdrop: { backgroundColor: '#F6F8FC' },
 
   header: {
     flexDirection: 'row',

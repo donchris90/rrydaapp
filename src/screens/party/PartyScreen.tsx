@@ -1,61 +1,46 @@
-import React, { useEffect, useRef, useState } from 'react';
-import { Alert, Animated, FlatList, Modal, StyleSheet, Text, TextInput, View } from 'react-native';
+import { AnnouncementBanner } from '../../components/AnnouncementBanner';
+import React, { useMemo, useState } from 'react';
+import { Alert, FlatList, Modal, Pressable, RefreshControl, StyleSheet, Text, TextInput, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { createRoom, fetchOpenRooms, fetchMyInvites, fetchRoomDetails, acceptInvite, declineInvite, PartyRoom, type RoomInvite } from '../../api/rooms';
-import { colors, gradients, glow, radii, spacing, type } from '../../theme';
+import { fetchOpenRooms, fetchMyInvites, fetchRoomDetails, acceptInvite, declineInvite, PartyRoom, type RoomInvite } from '../../api/rooms';
 import { GradientBackground } from '../../components/GradientBackground';
-import { GradientButton } from '../../components/GradientButton';
 import { PressableScale } from '../../components/PressableScale';
-import { FadeInUp } from '../../components/FadeInUp';
-import { LiveBadge } from '../../components/LiveBadge';
 import { Avatar } from '../../components/Avatar';
-import { SkeletonRow } from '../../components/Skeleton';
+import { FadeInUp } from '../../components/FadeInUp';
+import { useTheme } from '../../context/ThemeContext';
+import { gradients, radii, spacing, type } from '../../theme';
 import type { AppStackParamList } from '../../navigation/types';
 
-// Matches the reference app's Party list (title, host, live activity) as
-// closely as the backend's current endpoint allows — GET /rooms doesn't
-// return a live seat/member count yet (would need a join against
-// RoomSeat), so this shows what's actually real: title, privacy, and
-// declared seat capacity, not a fabricated "X people chatting" figure.
+type ModeTab = 'all' | 'video' | 'voice';
+
 export function PartyScreen() {
   const navigation = useNavigation<NativeStackNavigationProp<AppStackParamList>>();
   const queryClient = useQueryClient();
-  const [isCreateOpen, setIsCreateOpen] = useState(false);
-  const [newTitle, setNewTitle] = useState('');
+  const { palette, isMidnight } = useTheme();
+  const [activeTab, setActiveTab] = useState<ModeTab>('all');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [refreshing, setRefreshing] = useState(false);
+  const [invitesOpen, setInvitesOpen] = useState(false);
+  const [startModeOpen, setStartModeOpen] = useState(false);
 
   const roomsQuery = useQuery({ queryKey: ['rooms', 'open'], queryFn: fetchOpenRooms, refetchInterval: 8000 });
-
-  const [isInvitesOpen, setIsInvitesOpen] = useState(false);
   const invitesQuery = useQuery({ queryKey: ['rooms', 'invites'], queryFn: fetchMyInvites, refetchInterval: 15000 });
+
 
   const acceptMutation = useMutation({
     mutationFn: async (invite: RoomInvite) => {
-      // Need to know which seats are actually free right now to pick
-      // one — the invite itself doesn't carry a seat number.
       const room = await fetchRoomDetails(invite.roomId);
-      let seatNumber: number | null = null;
-      for (let i = 0; i < room.seatCount; i++) {
-        if (!room.seats.some((s) => s.seatNumber === i)) {
-          seatNumber = i;
-          break;
-        }
-      }
+      const seatNumber = Array.from({ length: room.seatCount }, (_, i) => i).find(i => !room.seats.some(s => s.seatNumber === i));
       if (seatNumber == null) throw new Error('That room is full now.');
       await acceptInvite(invite.roomId, seatNumber);
       return invite.roomId;
     },
-    onSuccess: (roomId) => {
-      queryClient.invalidateQueries({ queryKey: ['rooms', 'invites'] });
-      setIsInvitesOpen(false);
-      navigation.navigate('Room', { roomId });
-    },
-    onError: (error: any) => {
-      Alert.alert('Could not join', error?.response?.data?.message ?? error?.message ?? 'Something went wrong');
-    },
+    onSuccess: (roomId) => { queryClient.invalidateQueries({ queryKey: ['rooms', 'invites'] }); setInvitesOpen(false); navigation.navigate('Room', { roomId }); },
+    onError: (error: any) => Alert.alert('Could not join', error?.response?.data?.message ?? error?.message ?? 'Something went wrong'),
   });
 
   const declineMutation = useMutation({
@@ -63,273 +48,119 @@ export function PartyScreen() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['rooms', 'invites'] }),
   });
 
-  const createMutation = useMutation({
-    mutationFn: () => createRoom({ title: newTitle.trim(), privacy: 'PUBLIC', seatCount: 8 }),
-    onSuccess: (room) => {
-      setIsCreateOpen(false);
-      setNewTitle('');
-      queryClient.invalidateQueries({ queryKey: ['rooms', 'open'] });
-      navigation.navigate('Room', { roomId: room.id });
-    },
-    onError: (error: any) => {
-      Alert.alert('Could not create room', error?.response?.data?.message ?? 'Something went wrong');
-    },
-  });
+  const rooms = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    const source = Array.isArray(roomsQuery.data) ? roomsQuery.data : [];
+    return source.filter((room) => {
+      if (activeTab === 'video' && room.mode && room.mode !== 'VIDEO') return false;
+      if (activeTab === 'voice' && room.mode && room.mode !== 'AUDIO') return false;
+      if (!q) return true;
+      return `${room.title} ${room.id}`.toLowerCase().includes(q);
+    });
+  }, [roomsQuery.data, activeTab, searchQuery]);
 
-  const renderRoom = ({ item, index }: { item: PartyRoom; index: number }) => (
-    <FadeInUp index={index}>
-      <PressableScale style={styles.roomCard} onPress={() => navigation.navigate('Room', { roomId: item.id })}>
-        <Avatar name={item.title} size={48} />
-        <View style={styles.roomInfo}>
-          <Text style={styles.roomTitle} numberOfLines={1}>
-            {item.title}
-          </Text>
-          <View style={styles.roomMetaRow}>
-            {item.privacy !== 'PUBLIC' && (
-              <Ionicons name="lock-closed" size={12} color={colors.textSecondary} style={{ marginRight: 4 }} />
-            )}
-            <Text style={styles.roomMeta}>{item.privacy.replace('_', ' ')}</Text>
-            <Text style={styles.roomMeta}> · {item.seatCount} seats</Text>
+  const refresh = async () => { setRefreshing(true); await roomsQuery.refetch(); setRefreshing(false); };
+
+  const renderRoom = ({ item, index }: { item: PartyRoom; index: number }) => {
+    const isVideo = String((item as any).mode ?? '').toUpperCase().includes('VIDEO');
+    const cover = isVideo ? ['#FF2E7E', '#7B42F6'] as const : ['#00C4FF', '#7B42F6'] as const;
+    return (
+      <FadeInUp index={index} style={styles.cardWrap}>
+        <PressableScale style={[styles.roomCard, { backgroundColor: palette.surface, borderColor: palette.border }]} onPress={() => navigation.navigate('Room', { roomId: item.id })}>
+          <LinearGradient colors={cover} style={styles.cardAccent} start={{x:0,y:0}} end={{x:1,y:1}} />
+          <View style={styles.cardTop}>
+            <View style={styles.modeBadge}>
+              <Ionicons name={isVideo ? 'videocam' : 'mic'} size={12} color="#fff" />
+              <Text style={styles.modeText}>{isVideo ? 'VIDEO PARTY' : 'AUDIO LOUNGE'}</Text>
+            </View>
+            <View style={[styles.livePill, { backgroundColor: palette.primaryLight }]}><View style={[styles.liveDot, { backgroundColor: palette.live }]} /><Text style={[styles.liveText, { color: palette.primary }]}>LIVE</Text></View>
           </View>
-        </View>
-        {item.status === 'OPEN' && <LiveBadge label={null} />}
-      </PressableScale>
-    </FadeInUp>
-  );
+          <View style={styles.cardBody}>
+            <Avatar name={item.title} size={48} />
+            <View style={styles.info}>
+              <Text style={[styles.title, { color: palette.textPrimary }]} numberOfLines={2}>{item.title || 'Party Room'}</Text>
+              <Text style={[styles.meta, { color: palette.textSecondary }]} numberOfLines={1}>{item.privacy.replace('_', ' ')} · {item.seatCount} seats</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={20} color={palette.textMuted} />
+          </View>
+        </PressableScale>
+      </FadeInUp>
+    );
+  };
 
   return (
     <GradientBackground>
-      <View style={styles.header}>
-        <FadeInUp index={0}>
-          <Text style={styles.headerTitle}>Party</Text>
-        </FadeInUp>
-        <FadeInUp index={0}>
-          <PressableScale onPress={() => navigation.navigate('PreRoom')}>
-            <LinearGradient colors={gradients.gold} style={[styles.addButton, glow.gold]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }}>
-              <Ionicons name="add" size={24} color={colors.textOnLight} />
+      <View style={[styles.header, { paddingTop: 12, backgroundColor: isMidnight ? 'rgba(11,8,20,.92)' : 'rgba(255,255,255,.92)', borderBottomColor: palette.borderLight }]}> 
+        <View>
+          <Text style={[styles.headerTitle, { color: palette.textPrimary }]}>Party Live</Text>
+          <Text style={[styles.headerSub, { color: palette.textSecondary }]}>Video & Audio Social Lounges</Text>
+        </View>
+        <View style={styles.headerActions}>
+          <PressableScale style={[styles.inviteButton, { backgroundColor: palette.surface, borderColor: palette.border }]} onPress={() => setInvitesOpen(true)}>
+            <Ionicons name="mail-unread-outline" size={18} color={palette.primary} />
+            {Array.isArray(invitesQuery.data) && invitesQuery.data.length > 0 && <View style={styles.badge}><Text style={styles.badgeText}>{invitesQuery.data.length}</Text></View>}
+          </PressableScale>
+          <PressableScale onPress={() => setStartModeOpen(true)}>
+            <LinearGradient colors={gradients.hero} style={styles.startButton} start={{x:0,y:0}} end={{x:1,y:0}}>
+              <Ionicons name="add" size={18} color="#fff" /><Text style={styles.startText}>Start</Text>
             </LinearGradient>
           </PressableScale>
-        </FadeInUp>
+        </View>
       </View>
 
-      {invitesQuery.data && invitesQuery.data.length > 0 && (
-        <PressableScale style={styles.invitesBanner} onPress={() => setIsInvitesOpen(true)}>
-          <Ionicons name="mail-unread" size={16} color={colors.textOnLight} />
-          <Text style={styles.invitesBannerText}>
-            {invitesQuery.data.length} room invite{invitesQuery.data.length === 1 ? '' : 's'} waiting
-          </Text>
-        </PressableScale>
-      )}
+      <AnnouncementBanner />
 
-      {roomsQuery.isLoading ? (
-        <View style={styles.list}>
-          <SkeletonRow />
-          <SkeletonRow />
-          <SkeletonRow />
-        </View>
-      ) : (
-        <FlatList
-          data={roomsQuery.data ?? []}
-          keyExtractor={(item) => item.id}
-          renderItem={renderRoom}
-          contentContainerStyle={styles.list}
-          ListEmptyComponent={
-            <FadeInUp index={1}>
-              <Text style={styles.empty}>No open rooms right now — start one!</Text>
-            </FadeInUp>
-          }
-        />
-      )}
+      <View style={styles.filters}>
+        {([['all','All Parties'],['video','📹 Video Parties'],['voice','🎙️ Audio Lounges']] as const).map(([id,label]) => {
+          const active = activeTab === id;
+          return <Pressable key={id} onPress={() => setActiveTab(id)} style={[styles.tab, active && { backgroundColor: palette.primaryLight, borderColor: palette.primary }]}><Text style={[styles.tabText, { color: active ? palette.primary : palette.textSecondary }]}>{label}</Text></Pressable>;
+        })}
+      </View>
 
-      <CreateRoomModal
-        visible={isCreateOpen}
-        title={newTitle}
-        onChangeTitle={setNewTitle}
-        onCancel={() => setIsCreateOpen(false)}
-        onCreate={() => createMutation.mutate()}
-        isCreating={createMutation.isPending}
-      />
+      <View style={[styles.searchWrap, { backgroundColor: palette.surface, borderColor: palette.border }]}>
+        <Ionicons name="search" size={17} color={palette.textMuted} />
+        <TextInput value={searchQuery} onChangeText={setSearchQuery} placeholder="Search party rooms, hosts, categories..." placeholderTextColor={palette.textMuted} style={[styles.search, { color: palette.textPrimary }]} />
+        {searchQuery ? <Pressable onPress={() => setSearchQuery('')}><Ionicons name="close-circle" size={17} color={palette.textMuted} /></Pressable> : null}
+      </View>
 
-      <Modal visible={isInvitesOpen} transparent animationType="slide" onRequestClose={() => setIsInvitesOpen(false)}>
-        <View style={styles.inviteModalOverlay}>
-          <View style={styles.inviteModalSheet}>
-            <View style={styles.inviteModalHeader}>
-              <Text style={styles.inviteModalTitle}>Room Invites</Text>
-              <PressableScale onPress={() => setIsInvitesOpen(false)} style={styles.inviteModalCloseButton}>
-                <Ionicons name="close" size={18} color={colors.textPrimary} />
-              </PressableScale>
+      <FlatList data={rooms} keyExtractor={item => item.id} renderItem={renderRoom} numColumns={1} contentContainerStyle={styles.list} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} tintColor={palette.primary} />} showsVerticalScrollIndicator={false} ListEmptyComponent={<View style={styles.empty}><Ionicons name="mic-outline" size={42} color={palette.textMuted}/><Text style={[styles.emptyTitle,{color:palette.textPrimary}]}>No party rooms found</Text><Text style={[styles.emptySub,{color:palette.textSecondary}]}>Create a room and start the conversation.</Text></View>} />
+
+
+
+      <Modal visible={startModeOpen} transparent animationType="fade" onRequestClose={() => setStartModeOpen(false)}>
+        <View style={styles.modeModalOverlay}>
+          <View style={[styles.modeModalCard, { backgroundColor: palette.surface }]}>
+            <View style={styles.modalHeader}>
+              <View>
+                <Text style={[styles.modalTitle, { color: palette.textPrimary }]}>Start a Party</Text>
+                <Text style={{ color: palette.textSecondary, marginTop: 4 }}>Choose how your room should start.</Text>
+              </View>
+              <Pressable onPress={() => setStartModeOpen(false)}><Ionicons name="close" size={22} color={palette.textSecondary} /></Pressable>
             </View>
-            <FlatList
-              data={invitesQuery.data ?? []}
-              keyExtractor={(i) => i.requestId}
-              ListEmptyComponent={<Text style={styles.emptyInvitesText}>No pending invites.</Text>}
-              renderItem={({ item }: { item: RoomInvite }) => (
-                <View style={styles.inviteRow}>
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.inviteRoomTitle} numberOfLines={1}>{item.roomTitle}</Text>
-                    <Text style={styles.inviteHostName}>Hosted by {item.hostDisplayName ?? 'someone'}</Text>
-                  </View>
-                  <View style={styles.inviteActions}>
-                    <PressableScale
-                      style={styles.inviteAccept}
-                      onPress={() => acceptMutation.mutate(item)}
-                    >
-                      <Text style={styles.inviteAcceptText}>Join</Text>
-                    </PressableScale>
-                    <PressableScale style={styles.inviteDecline} onPress={() => declineMutation.mutate(item.requestId)}>
-                      <Text style={styles.inviteDeclineText}>Decline</Text>
-                    </PressableScale>
-                  </View>
-                </View>
-              )}
-            />
+            <Pressable style={[styles.modeChoice, { borderColor: palette.border }]} onPress={() => { setStartModeOpen(false); navigation.navigate('PreRoom', { initialMode: 'video' }); }}>
+              <View style={[styles.modeChoiceIcon, { backgroundColor: '#FF2E7E' }]}><Ionicons name="videocam" size={24} color="#fff" /></View>
+              <View style={{ flex: 1 }}><Text style={[styles.modeChoiceTitle, { color: palette.textPrimary }]}>Video Party</Text><Text style={[styles.modeChoiceSub, { color: palette.textSecondary }]}>Camera, voice, seats and beauty tools</Text></View>
+              <Ionicons name="chevron-forward" size={20} color={palette.textMuted} />
+            </Pressable>
+            <Pressable style={[styles.modeChoice, { borderColor: palette.border }]} onPress={() => { setStartModeOpen(false); navigation.navigate('PreRoom', { initialMode: 'voice' }); }}>
+              <View style={[styles.modeChoiceIcon, { backgroundColor: '#00AEEF' }]}><Ionicons name="mic" size={24} color="#fff" /></View>
+              <View style={{ flex: 1 }}><Text style={[styles.modeChoiceTitle, { color: palette.textPrimary }]}>Audio Party</Text><Text style={[styles.modeChoiceSub, { color: palette.textSecondary }]}>Voice-only room with seats and chat</Text></View>
+              <Ionicons name="chevron-forward" size={20} color={palette.textMuted} />
+            </Pressable>
           </View>
         </View>
+      </Modal>
+
+      <Modal visible={invitesOpen} transparent animationType="slide" onRequestClose={() => setInvitesOpen(false)}>
+        <View style={styles.modalOverlay}><View style={[styles.modalCard,{backgroundColor:palette.surface,maxHeight:'70%'}]}>
+          <View style={styles.modalHeader}><Text style={[styles.modalTitle,{color:palette.textPrimary}]}>Party Invites</Text><Pressable onPress={() => setInvitesOpen(false)}><Ionicons name="close" size={22} color={palette.textSecondary}/></Pressable></View>
+          <FlatList data={invitesQuery.data ?? []} keyExtractor={(x:any)=>x.requestId} ListEmptyComponent={<Text style={{color:palette.textSecondary,textAlign:'center',padding:24}}>No pending invites.</Text>} renderItem={({item})=><View style={[styles.inviteRow,{borderBottomColor:palette.borderLight}]}><View style={{flex:1}}><Text style={{color:palette.textPrimary,fontWeight:'800'}}>{item.roomTitle ?? 'Party invitation'}</Text><Text style={{color:palette.textMuted,fontSize:12}}>You were invited to join this room.</Text></View><Pressable onPress={()=>declineMutation.mutate(item.requestId)}><Text style={{color:palette.textSecondary,fontWeight:'700'}}>Decline</Text></Pressable><Pressable onPress={()=>acceptMutation.mutate(item)} style={{marginLeft:14}}><Text style={{color:palette.primary,fontWeight:'800'}}>Join</Text></Pressable></View>} />
+        </View></View>
       </Modal>
     </GradientBackground>
   );
 }
 
-function CreateRoomModal({
-  visible,
-  title,
-  onChangeTitle,
-  onCancel,
-  onCreate,
-  isCreating,
-}: {
-  visible: boolean;
-  title: string;
-  onChangeTitle: (value: string) => void;
-  onCancel: () => void;
-  onCreate: () => void;
-  isCreating: boolean;
-}) {
-  const progress = useRef(new Animated.Value(0)).current;
-
-  useEffect(() => {
-    Animated.spring(progress, { toValue: visible ? 1 : 0, useNativeDriver: true, speed: 22, bounciness: 8 }).start();
-  }, [visible, progress]);
-
-  const scale = progress.interpolate({ inputRange: [0, 1], outputRange: [0.85, 1] });
-
-  return (
-    <Modal visible={visible} transparent animationType="fade">
-      <View style={styles.modalOverlay}>
-        <Animated.View style={[styles.modalCard, { opacity: progress, transform: [{ scale }] }]}>
-          <Text style={styles.modalTitle}>New room</Text>
-          <TextInput
-            style={styles.modalInput}
-            placeholder="Room title"
-            placeholderTextColor={colors.textMuted}
-            value={title}
-            onChangeText={onChangeTitle}
-          />
-          <View style={styles.modalActions}>
-            <PressableScale style={styles.modalCancel} onPress={onCancel}>
-              <Text style={styles.modalCancelText}>Cancel</Text>
-            </PressableScale>
-            <GradientButton
-              label={isCreating ? 'Creating…' : 'Create'}
-              onPress={onCreate}
-              disabled={!title.trim() || isCreating}
-              loading={isCreating}
-              style={styles.modalCreate}
-            />
-          </View>
-        </Animated.View>
-      </View>
-    </Modal>
-  );
-}
-
 const styles = StyleSheet.create({
-  header: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingTop: spacing.xl,
-    paddingHorizontal: spacing.md,
-    paddingBottom: spacing.md,
-  },
-  headerTitle: { ...type.display, color: colors.textPrimary },
-  addButton: { width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center' },
-  list: { padding: spacing.md },
-  empty: { color: colors.textSecondary, textAlign: 'center', marginTop: spacing.xl },
-  roomCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.sm,
-    backgroundColor: colors.surface,
-    borderRadius: radii.md,
-    padding: spacing.sm,
-    marginBottom: spacing.sm,
-    borderWidth: 1,
-    borderColor: colors.border,
-  },
-  roomInfo: { flex: 1 },
-  roomTitle: { color: colors.textPrimary, fontWeight: '700', fontSize: 15 },
-  roomMetaRow: { flexDirection: 'row', alignItems: 'center', marginTop: 4 },
-  roomMeta: { color: colors.textSecondary, fontSize: 12 },
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(8,4,20,0.75)', justifyContent: 'center', padding: spacing.lg },
-  modalCard: { backgroundColor: colors.surfaceRaised, borderRadius: radii.lg, padding: spacing.lg, borderWidth: 1, borderColor: colors.borderLight },
-  modalTitle: { color: colors.textPrimary, fontSize: 18, fontWeight: '700', marginBottom: spacing.md },
-  modalInput: {
-    backgroundColor: colors.background,
-    borderRadius: radii.sm,
-    padding: spacing.sm,
-    color: colors.textPrimary,
-    borderWidth: 1,
-    borderColor: colors.border,
-  },
-  modalActions: { flexDirection: 'row', justifyContent: 'flex-end', alignItems: 'center', marginTop: spacing.md, gap: spacing.sm },
-  modalCancel: { paddingVertical: spacing.sm, paddingHorizontal: spacing.md },
-  modalCancelText: { color: colors.textSecondary, fontWeight: '600' },
-  modalCreate: { flexGrow: 0, paddingHorizontal: spacing.sm },
-  invitesBanner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.xs,
-    alignSelf: 'flex-start',
-    marginHorizontal: spacing.md,
-    marginBottom: spacing.sm,
-    paddingHorizontal: spacing.sm,
-    paddingVertical: 6,
-    borderRadius: radii.pill,
-    backgroundColor: colors.primary,
-  },
-  invitesBannerText: { color: colors.textOnLight, fontWeight: '700', fontSize: 12 },
-  inviteModalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'flex-end' },
-  inviteModalSheet: {
-    backgroundColor: colors.surfaceRaised,
-    borderTopLeftRadius: radii.xl,
-    borderTopRightRadius: radii.xl,
-    padding: spacing.md,
-    maxHeight: '60%',
-  },
-  inviteModalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: spacing.sm },
-  inviteModalTitle: { ...type.h2, color: colors.textPrimary },
-  inviteModalCloseButton: {
-    width: 32,
-    height: 32,
-    borderRadius: radii.pill,
-    backgroundColor: colors.surface,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  emptyInvitesText: { ...type.body, color: colors.textSecondary, textAlign: 'center', paddingVertical: spacing.lg },
-  inviteRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: spacing.sm,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.borderLight,
-  },
-  inviteRoomTitle: { ...type.body, color: colors.textPrimary, fontWeight: '700' },
-  inviteHostName: { ...type.caption, color: colors.textMuted, marginTop: 2 },
-  inviteActions: { flexDirection: 'row', gap: spacing.xs },
-  inviteAccept: { paddingHorizontal: spacing.sm, paddingVertical: 6, borderRadius: radii.sm, backgroundColor: colors.primary },
-  inviteAcceptText: { color: '#FFF', fontWeight: '700', fontSize: 12 },
-  inviteDecline: { paddingHorizontal: spacing.sm, paddingVertical: 6, borderRadius: radii.sm, backgroundColor: 'rgba(255,255,255,0.1)' },
-  inviteDeclineText: { color: colors.textSecondary, fontWeight: '700', fontSize: 12 },
+  header:{paddingHorizontal:spacing.md,paddingBottom:12,flexDirection:'row',alignItems:'center',justifyContent:'space-between',borderBottomWidth:1}, headerTitle:{...type.h1}, headerSub:{...type.caption,marginTop:3}, headerActions:{flexDirection:'row',alignItems:'center',gap:8}, inviteButton:{width:40,height:40,borderRadius:20,borderWidth:1,alignItems:'center',justifyContent:'center'}, badge:{position:'absolute',right:-3,top:-3,minWidth:16,height:16,borderRadius:8,backgroundColor:'#FF2D55',alignItems:'center',justifyContent:'center'},badgeText:{color:'#fff',fontSize:9,fontWeight:'900'},startButton:{height:40,paddingHorizontal:15,borderRadius:20,flexDirection:'row',alignItems:'center',gap:5},startText:{color:'#fff',fontWeight:'900',fontSize:13}, filters:{flexDirection:'row',paddingHorizontal:spacing.md,paddingVertical:10,gap:8},tab:{paddingHorizontal:13,paddingVertical:9,borderRadius:radii.pill,borderWidth:1,borderColor:'transparent'},tabText:{fontSize:12,fontWeight:'800'},searchWrap:{marginHorizontal:spacing.md,marginBottom:10,height:42,borderRadius:13,borderWidth:1,flexDirection:'row',alignItems:'center',paddingHorizontal:12,gap:8},search:{flex:1,fontSize:13,paddingVertical:0},list:{paddingHorizontal:spacing.md,paddingBottom:110},cardWrap:{marginBottom:10},roomCard:{borderRadius:18,borderWidth:1,overflow:'hidden',minHeight:132},cardAccent:{height:4},cardTop:{paddingHorizontal:12,paddingTop:10,flexDirection:'row',justifyContent:'space-between',alignItems:'center'},modeBadge:{backgroundColor:'rgba(20,18,30,.88)',paddingHorizontal:8,paddingVertical:5,borderRadius:8,flexDirection:'row',alignItems:'center',gap:4},modeText:{color:'#fff',fontSize:9,fontWeight:'900'},livePill:{paddingHorizontal:7,paddingVertical:5,borderRadius:8,flexDirection:'row',alignItems:'center',gap:4},liveDot:{width:6,height:6,borderRadius:3},liveText:{fontSize:9,fontWeight:'900'},cardBody:{padding:12,flexDirection:'row',alignItems:'center',gap:12},info:{flex:1},title:{fontSize:15,fontWeight:'900'},meta:{fontSize:11,fontWeight:'600',marginTop:4},empty:{alignItems:'center',paddingTop:70},emptyTitle:{fontSize:17,fontWeight:'900',marginTop:12},emptySub:{fontSize:13,marginTop:5},modalOverlay:{flex:1,backgroundColor:'rgba(0,0,0,.55)',justifyContent:'flex-end'},modalCard:{borderTopLeftRadius:24,borderTopRightRadius:24,padding:20},modalHeader:{flexDirection:'row',alignItems:'center',justifyContent:'space-between'},modalTitle:{fontSize:20,fontWeight:'900'},modalInput:{height:48,borderWidth:1,borderRadius:12,paddingHorizontal:14,marginTop:16},modalActions:{flexDirection:'row',justifyContent:'flex-end',alignItems:'center',gap:12,marginTop:16},cancel:{paddingHorizontal:10,paddingVertical:12},createCta:{paddingHorizontal:18,paddingVertical:12,borderRadius:14},createCtaText:{color:'#fff',fontWeight:'900'},inviteRow:{flexDirection:'row',alignItems:'center',paddingVertical:14,borderBottomWidth:1},modeModalOverlay:{flex:1,backgroundColor:'rgba(0,0,0,.62)',justifyContent:'center',padding:20},modeModalCard:{borderRadius:24,padding:20},modeChoice:{minHeight:82,borderWidth:1,borderRadius:18,padding:12,marginTop:14,flexDirection:'row',alignItems:'center',gap:12},modeChoiceIcon:{width:50,height:50,borderRadius:16,alignItems:'center',justifyContent:'center'},modeChoiceTitle:{fontSize:16,fontWeight:'900'},modeChoiceSub:{fontSize:12,marginTop:4}
 });

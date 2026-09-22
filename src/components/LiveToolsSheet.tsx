@@ -7,11 +7,14 @@ import {
   Switch,
   Text,
   View,
+  Share,
+  useWindowDimensions,
 } from 'react-native';
 import Slider from '@react-native-community/slider';
 import * as ImagePicker from 'expo-image-picker';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { colors, radii, spacing, type, gradients } from '../theme';
 import type { FaceShapeState } from '../live/useAgoraEngine';
 
@@ -39,7 +42,7 @@ type ToolItem = {
   tint: string;
   bg: string;
   badge?: string;
-  gradient?: string[];
+  gradient?: readonly [string, string, ...string[]];
   onPress?: () => void;
 };
 
@@ -70,7 +73,10 @@ type Props = {
   // defaults to 'main', so every existing call site is unaffected.
   initialPanel?: 'main' | 'beauty';
 
-  onFeature?: (key: string) => void;
+  // Extra real actions a screen can offer. A tile only appears when its handler
+  // (or, for share, its message) is provided — there are no placeholder tiles.
+  onOpenPk?: () => void;
+  shareMessage?: string;
 };
 
 const BEAUTY_PRESETS: { name: string; value: Partial<BeautyState> }[] = [
@@ -110,6 +116,20 @@ const BEAUTY_CATEGORIES: {
 
 const BACKGROUND_COLORS = ['#1E1E2E', '#0E0A1F', '#2D1B4E', '#1A3A2E', '#3E1F1F', '#1E2A44'];
 
+// Looks built from Agora's real skin settings (whitening, smoothing, rosy tone,
+// contrast). "None" switches beauty off.
+const SKIN_FILTERS: { name: string; value: Omit<BeautyState, 'enabled'> | null }[] = [
+  { name: 'None', value: null },
+  { name: 'Natural', value: { lighteningContrastLevel: 1, lighteningLevel: 0.2, smoothnessLevel: 0.3, rednessLevel: 0.1 } },
+  { name: 'Fair', value: { lighteningContrastLevel: 1, lighteningLevel: 0.7, smoothnessLevel: 0.4, rednessLevel: 0.1 } },
+  { name: 'Rosy', value: { lighteningContrastLevel: 1, lighteningLevel: 0.3, smoothnessLevel: 0.4, rednessLevel: 0.7 } },
+  { name: 'Glow', value: { lighteningContrastLevel: 2, lighteningLevel: 0.5, smoothnessLevel: 0.5, rednessLevel: 0.4 } },
+  { name: 'Crisp', value: { lighteningContrastLevel: 2, lighteningLevel: 0.2, smoothnessLevel: 0.1, rednessLevel: 0 } },
+  { name: 'Soft', value: { lighteningContrastLevel: 0, lighteningLevel: 0.4, smoothnessLevel: 0.9, rednessLevel: 0.2 } },
+];
+const sameLook = (a: BeautyState, b: Omit<BeautyState, 'enabled'>) =>
+  a.lighteningContrastLevel === b.lighteningContrastLevel && a.lighteningLevel === b.lighteningLevel && a.smoothnessLevel === b.smoothnessLevel && a.rednessLevel === b.rednessLevel;
+
 export function LiveToolsSheet({
   visible,
   onClose,
@@ -129,7 +149,8 @@ export function LiveToolsSheet({
   setBackground,
   faceShape,
   setFaceShape,
-  onFeature,
+  onOpenPk,
+  shareMessage,
   initialPanel,
 }: Props) {
   const [panel, setPanel] = useState<'main' | 'beauty'>(initialPanel ?? 'main');
@@ -138,37 +159,37 @@ export function LiveToolsSheet({
     if (visible) setPanel(initialPanel ?? 'main');
   }, [visible, initialPanel]);
 
-  const handle = (key: string, fallback?: () => void) => () => {
-    if (fallback) fallback();
-    else onFeature?.(key);
-  };
-
-  const hostTools: ToolItem[] = [
-    { key: 'admins',        label: 'Admins',              icon: 'people-outline',                tint: '#FFF', bg: 'rgba(255,255,255,0.10)' },
-    { key: 'textBubble',    label: 'Text Bubble',         icon: 'chatbubble-ellipses-outline',   tint: '#FFF', bg: 'rgba(255,255,255,0.10)' },
-    { key: 'fanClub',       label: 'Fan Club',            icon: 'heart-outline',                 tint: '#FFF', bg: 'rgba(255,255,255,0.10)' },
-    { key: 'liveData',      label: 'Live Data',           icon: 'analytics-outline',             tint: '#FFF', bg: 'rgba(255,255,255,0.10)' },
-    { key: 'liveMgmt',      label: 'Live Management',     icon: 'settings-outline',              tint: '#FFF', bg: 'rgba(255,255,255,0.10)' },
-    { key: 'ambient',       label: 'Ambient Sound',       icon: 'musical-notes-outline',         tint: '#FFF', bg: 'rgba(255,255,255,0.10)' },
-    { key: 'screenRec',     label: 'Screen recording',    icon: 'radio-button-on',               tint: '#FF4D4D', bg: 'rgba(229,57,53,0.20)' },
-    { key: 'streamInsight', label: 'Live Stream Insight', icon: 'calendar-outline',              tint: '#FFF', bg: 'rgba(255,255,255,0.10)', badge: '!' },
-  ];
-
-  const basicTools: ToolItem[] = [
-    { key: 'message',      label: 'Message',           icon: 'mail-outline',                  tint: '#FFF', bg: 'rgba(255,255,255,0.10)' },
-    { key: 'switchCamera', label: 'Switch Camera',     icon: 'camera-outline',                tint: '#FFF', bg: 'rgba(255,255,255,0.10)', onPress: switchCamera },
-    {
+  // Every tile below does something real. This sheet used to list ~25 more
+  // (Admins, Text Bubble, Fan Club, Live Data, Live Management, Ambient Sound,
+  // Screen recording, Live Stream Insight, Message, Mirror, Effect & Msg, Rank,
+  // Rewards, Store, VIP, Gift Center, Bag, Gift Gallery, Lucky Box, Gift
+  // Collection, Gift Wish, ...) that were not wired to anything.
+  const tools: ToolItem[] = [];
+  if (switchCamera) {
+    tools.push({ key: 'switchCamera', label: 'Switch Camera', icon: 'camera-reverse-outline', tint: '#FFF', bg: 'rgba(255,255,255,0.10)', onPress: switchCamera });
+  }
+  if (toggleMic) {
+    tools.push({
+      key: 'mic',
+      label: isMicMuted ? 'Muted' : 'Mic On',
+      icon: isMicMuted ? 'mic-off-outline' : 'mic-outline',
+      tint: isMicMuted ? '#FF4D67' : '#FFF',
+      bg: isMicMuted ? 'rgba(255,77,103,0.25)' : 'rgba(255,255,255,0.10)',
+      onPress: toggleMic,
+    });
+  }
+  if (beauty && setBeauty && faceShape && setFaceShape && background && setBackground) {
+    tools.push({
       key: 'beauty',
       label: 'Beauty',
       icon: 'sparkles-outline',
-      tint: beauty?.enabled ? '#FFD700' : '#FFF',
-      bg: beauty?.enabled ? 'rgba(255,215,0,0.25)' : 'rgba(255,255,255,0.10)',
+      tint: beauty.enabled ? '#FFD700' : '#FFF',
+      bg: beauty.enabled ? 'rgba(255,215,0,0.25)' : 'rgba(255,255,255,0.10)',
       onPress: () => setPanel('beauty'),
-    },
-    { key: 'mirror',       label: 'Mirror',            icon: 'swap-horizontal-outline',       tint: '#FFF', bg: 'rgba(255,255,255,0.10)' },
-    { key: 'share',        label: 'Share',             icon: 'arrow-redo-outline',            tint: '#FFF', bg: 'rgba(255,255,255,0.10)' },
-    { key: 'effect',       label: 'Effect & Msg',      icon: 'options-outline',               tint: '#FFF', bg: 'rgba(255,255,255,0.10)' },
-    {
+    });
+  }
+  if (toggleNoiseSuppression) {
+    tools.push({
       key: 'noise',
       label: 'Noise Reduction',
       icon: 'pulse-outline',
@@ -176,25 +197,26 @@ export function LiveToolsSheet({
       bg: isNoiseSuppressionOn ? 'rgba(107,78,255,0.25)' : 'rgba(255,255,255,0.10)',
       badge: isNoiseSuppressionOn ? 'On' : undefined,
       onPress: toggleNoiseSuppression,
-    },
-  ];
-
-  const features: ToolItem[] = [
-    { key: 'rank',           label: 'Rank',            icon: 'trophy-outline',        tint: '#000', bg: '#000', gradient: ['#FFD86B', '#FF9A00'] },
-    { key: 'pk',             label: 'PK',              icon: 'flash-outline',         tint: '#FFF', bg: '#000', gradient: ['#FF4D9A', '#B621FE'] },
-    { key: 'rewards',        label: 'Rewards',         icon: 'logo-usd',              tint: '#000', bg: '#000', gradient: ['#FFE066', '#FF9A00'] },
-    { key: 'store',          label: 'Store',           icon: 'bag-handle-outline',    tint: '#FFF', bg: '#000', gradient: ['#FF6B6B', '#E53935'] },
-    { key: 'vip',            label: 'VIP',             icon: 'diamond-outline',       tint: '#FFF', bg: '#000', gradient: ['#B06AB3', '#6B4EFF'] },
-    { key: 'giftCenter',     label: 'Gift Center',     icon: 'gift-outline',          tint: '#FFF', bg: '#000', gradient: ['#FF9AC4', '#FF1493'] },
-    { key: 'bag',            label: 'Bag',             icon: 'briefcase-outline',     tint: '#FFF', bg: '#000', gradient: ['#5EE0FF', '#1E90FF'] },
-    { key: 'giftGallery',    label: 'Gift Gallery',    icon: 'images-outline',        tint: '#FFF', bg: '#000', gradient: ['#5EE0FF', '#1E90FF'] },
-    { key: 'luckyBox',       label: 'Lucky Box',       icon: 'gift-outline',          tint: '#FFF', bg: '#000', gradient: ['#FF4D4D', '#E53935'], badge: '!' },
-    { key: 'giftCollection', label: 'Gift Collection', icon: 'heart-outline',         tint: '#FFF', bg: '#000', gradient: ['#FF9AC4', '#FF1493'] },
-    { key: 'giftWish',       label: 'Gift Wish',       icon: 'star-outline',          tint: '#FFD700', bg: '#000', gradient: ['#FFE066', '#FF9A00'] },
-  ];
+    });
+  }
+  if (onOpenPk) {
+    tools.push({ key: 'pk', label: 'PK Battle', icon: 'flash-outline', tint: '#FFC24B', bg: 'rgba(255,194,75,0.18)', onPress: () => { onClose(); onOpenPk(); } });
+  }
+  if (shareMessage) {
+    tools.push({
+      key: 'share',
+      label: 'Share',
+      icon: 'arrow-redo-outline',
+      tint: '#FFF',
+      bg: 'rgba(255,255,255,0.10)',
+      onPress: () => {
+        Share.share({ message: shareMessage }).catch(() => {});
+      },
+    });
+  }
 
   const renderTool = (t: ToolItem) => (
-    <Pressable key={t.key} style={styles.toolCell} onPress={handle(t.key, t.onPress)}>
+    <Pressable key={t.key} style={styles.toolCell} onPress={t.onPress}>
       <View style={styles.toolIconWrap}>
         {t.gradient ? (
           <LinearGradient
@@ -220,7 +242,7 @@ export function LiveToolsSheet({
     </Pressable>
   );
 
-  const [beautyTab, setBeautyTab] = useState<'preset' | 'beauty' | 'sticker' | 'filters' | 'bg'>('preset');
+  const [beautyTab, setBeautyTab] = useState<'preset' | 'beauty' | 'filters' | 'bg'>('preset');
   const [selectedCategory, setSelectedCategory] = useState<BeautyCategoryKey>('whitening');
 
   // Real device photo picker — replaces the earlier "coming soon"
@@ -275,11 +297,11 @@ export function LiveToolsSheet({
             [
               ['preset', 'Preset'],
               ['beauty', 'Beauty'],
-              ['sticker', 'Sticker'],
               ['filters', 'Filters'],
               ['bg', 'BG'],
             ] as const
-          ).map(([key, label]) => (
+          )
+            .map(([key, label]) => (
             <Pressable key={key} onPress={() => setBeautyTab(key)} style={styles.tabItem}>
               <Text style={[styles.tabText, beautyTab === key && styles.tabTextActive]}>{label}</Text>
               {beautyTab === key && <View style={styles.tabUnderline} />}
@@ -345,32 +367,27 @@ export function LiveToolsSheet({
           </>
         )}
 
-        {beautyTab === 'sticker' && (
-          <View style={styles.unavailableBox}>
-            <Ionicons name="happy-outline" size={22} color="rgba(255,255,255,0.4)" />
-            <Text style={styles.emptyText}>AR stickers aren't available in this build — no sticker/AR capability is wired up yet.</Text>
-          </View>
-        )}
-
         {beautyTab === 'filters' && (
           <>
-            {filters && onFilterChange ? (
-              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterRow}>
-                {filters.map((f) => {
-                  const active = filter === f;
-                  return (
-                    <Pressable key={f} onPress={() => onFilterChange(f)} style={[styles.filterChip, active && styles.filterChipActive]}>
-                      {active && (
-                        <LinearGradient colors={gradients.hero} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={StyleSheet.absoluteFill} />
-                      )}
-                      <Text style={[styles.filterChipText, active && styles.filterChipTextActive]}>{f}</Text>
-                    </Pressable>
-                  );
-                })}
-              </ScrollView>
-            ) : (
-              <Text style={styles.emptyText}>Filters aren't available in this build.</Text>
-            )}
+            {/* Real filters: each is a look built from the SDK's skin settings
+                (brightness, contrast, smoothing, warmth), applied to what viewers
+                see — not a tint drawn over the host's own screen. */}
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterRow}>
+              {SKIN_FILTERS.map((f) => {
+                const active = f.value ? beauty.enabled && sameLook(beauty, f.value) : !beauty.enabled;
+                return (
+                  <Pressable
+                    key={f.name}
+                    onPress={() => setBeauty(f.value ? { ...f.value, enabled: true } : { ...beauty, enabled: false })}
+                    style={[styles.filterChip, active && styles.filterChipActive]}
+                  >
+                    {active && <LinearGradient colors={gradients.hero} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={StyleSheet.absoluteFill} />}
+                    <Text style={[styles.filterChipText, active && styles.filterChipTextActive]}>{f.name}</Text>
+                  </Pressable>
+                );
+              })}
+            </ScrollView>
+            <Text style={styles.emptyText}>Filters change brightness, contrast, smoothing and warmth. Fine-tune them in the Beauty tab.</Text>
           </>
         )}
 
@@ -440,6 +457,9 @@ export function LiveToolsSheet({
     );
   };
 
+  const insets = useSafeAreaInsets();
+  const { height: windowHeight } = useWindowDimensions();
+
   if (!visible) return null;
 
   return (
@@ -455,9 +475,16 @@ export function LiveToolsSheet({
     // (see sheet's height below) so the live preview stays visible above
     // it — matching the reference's "see the effect in real time" request,
     // which the previous 85%-tall version made impossible either way.
-    <View style={StyleSheet.absoluteFill} pointerEvents="box-none">
+    // zIndex + elevation: the chat overlay and other in-screen layers used to draw
+    // OVER this sheet (Android orders by elevation, not just tree order), which hid
+    // part of it. The sheet's height is a share of the screen with room for the
+    // phone's own buttons, and its content scrolls, so every tool can be reached.
+    <View style={[StyleSheet.absoluteFill, { zIndex: 1000, elevation: 1000 }]} pointerEvents="box-none">
       <Pressable style={styles.overlay} onPress={onClose}>
-        <Pressable style={styles.sheet} onPress={(e) => e.stopPropagation()}>
+        <Pressable
+          style={[styles.sheet, { maxHeight: Math.round(windowHeight * 0.62), paddingBottom: insets.bottom + spacing.md }]}
+          onPress={(e) => e.stopPropagation()}
+        >
           <View style={styles.grabber} />
 
           {panel === 'beauty' && (
@@ -473,11 +500,12 @@ export function LiveToolsSheet({
               showsVerticalScrollIndicator={false}
               contentContainerStyle={{ paddingBottom: spacing.xl }}
             >
-              <Text style={styles.sectionTitle}>Host Tools</Text>
-              <View style={styles.grid}>{hostTools.map(renderTool)}</View>
-
-              <Text style={styles.sectionTitle}>Basic Tools</Text>
-              <View style={styles.grid}>{basicTools.map(renderTool)}</View>
+              <Text style={styles.sectionTitle}>{isHost ? 'Studio Tools' : 'Tools'}</Text>
+              {tools.length > 0 ? (
+                <View style={styles.grid}>{tools.map(renderTool)}</View>
+              ) : (
+                <Text style={styles.emptyText}>No tools are available here.</Text>
+              )}
 
               {filters && onFilterChange && (
                 <>
@@ -486,19 +514,8 @@ export function LiveToolsSheet({
                     {filters.map((f) => {
                       const active = filter === f;
                       return (
-                        <Pressable
-                          key={f}
-                          onPress={() => onFilterChange(f)}
-                          style={[styles.filterChip, active && styles.filterChipActive]}
-                        >
-                          {active && (
-                            <LinearGradient
-                              colors={gradients.hero}
-                              start={{ x: 0, y: 0 }}
-                              end={{ x: 1, y: 1 }}
-                              style={StyleSheet.absoluteFill}
-                            />
-                          )}
+                        <Pressable key={f} onPress={() => onFilterChange(f)} style={[styles.filterChip, active && styles.filterChipActive]}>
+                          {active && <LinearGradient colors={gradients.hero} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={StyleSheet.absoluteFill} />}
                           <Text style={[styles.filterChipText, active && styles.filterChipTextActive]}>{f}</Text>
                         </Pressable>
                       );
@@ -506,9 +523,6 @@ export function LiveToolsSheet({
                   </ScrollView>
                 </>
               )}
-
-              <Text style={styles.sectionTitle}>Features Center</Text>
-              <View style={styles.grid}>{features.map(renderTool)}</View>
             </ScrollView>
           )}
 
@@ -529,10 +543,10 @@ function BeautySlider({
   onChange: (v: number) => void;
 }) {
   return (
-    <View style={styles.sliderRow}>
+    <View style={styles.labeledSliderRow}>
       <Text style={styles.sliderLabel}>{label}</Text>
       <Slider
-        style={styles.slider}
+        style={styles.labeledSlider}
         minimumValue={0}
         maximumValue={1}
         value={value}
@@ -556,8 +570,6 @@ const styles = StyleSheet.create({
     borderTopRightRadius: radii.xl,
     paddingHorizontal: spacing.md,
     paddingTop: spacing.sm,
-    maxHeight: '34%',
-    minHeight: 400,
   },
   grabber: {
     alignSelf: 'center',
@@ -660,9 +672,9 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(107,78,255,0.5)',
   },
   presetChipText: { color: '#FFF', fontSize: 12, fontWeight: '700' },
-  sliderRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, paddingVertical: 4 },
+  labeledSliderRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, paddingVertical: 4 },
   sliderLabel: { color: 'rgba(255,255,255,0.85)', width: 80, fontSize: 13 },
-  slider: { flex: 1, height: 40 },
+  labeledSlider: { flex: 1, height: 40 },
   sliderValue: { color: '#FFF', width: 34, textAlign: 'right', fontSize: 12, fontWeight: '700' },
   contrastRow: { flexDirection: 'row', gap: spacing.xs },
   contrastChip: { flex: 1, paddingVertical: 8, borderRadius: 10, backgroundColor: 'rgba(255,255,255,0.08)', alignItems: 'center' },

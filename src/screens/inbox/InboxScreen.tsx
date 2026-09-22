@@ -1,3 +1,4 @@
+import { useProfileSheet } from '../../context/ProfileSheetContext';
 import React, { useState } from 'react';
 import { ActivityIndicator, FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
@@ -18,6 +19,7 @@ import { PressableScale } from '../../components/PressableScale';
 import { Avatar } from '../../components/Avatar';
 import { colors, gradients, radii, spacing, type } from '../../theme';
 import type { AppStackParamList } from '../../navigation/types';
+import { routeForNotification } from '../../utils/notificationRoutes';
 
 // GET /api/v1/notifications existed and worked since early in this
 // project, with a comment on the old placeholder version of this screen
@@ -31,32 +33,108 @@ import type { AppStackParamList } from '../../navigation/types';
 // genuinely new backend feature (DirectMessage model + real endpoints),
 // not a re-skin of anything that already existed. Polled, not push-
 // delivered — see ConversationScreen's own comment for why.
+const fmtCoins = (v: unknown) => Number(v ?? 0).toLocaleString('en-US');
+
+// Every newer notification type snapshots the names/amounts it needs into
+// its payload when it is created, so nothing here needs a follow-up lookup.
 function describeNotification(n: AppNotification): string {
-  if (n.type === 'FOLLOW') {
-    const name = (n.payload as any)?.followerDisplayName;
-    return name ? `${name} started following you` : 'Someone started following you';
+  const p = (n.payload ?? {}) as Record<string, any>;
+  switch (n.type) {
+    case 'FOLLOW':
+      return p.followerDisplayName ? `${p.followerDisplayName} started following you` : 'Someone started following you';
+    case 'MESSAGE':
+      return 'New message';
+    case 'SECURITY':
+      if (p.event === 'kyc_approved') return 'Your identity has been verified';
+      if (p.event === 'kyc_rejected') return `Your identity check was not approved${p.reason ? `: ${p.reason}` : ''}. You can submit it again.`;
+      if (p.event === 'payout_account_added' || p.event === 'payout_account_changed') {
+        return `Your payout account is now ${p.bankName ?? 'a bank account'} ••••${p.accountLast4 ?? ''}. If this wasn't you, contact support.`;
+      }
+      return 'Security alert on your account';
+    case 'GIFT_RECEIVED': {
+      const who = p.senderDisplayName ?? 'Someone';
+      return (p.count ?? 1) > 1
+        ? `${who} sent you ${p.count} gifts worth ${fmtCoins(p.totalCoins)} coins`
+        : `${who} sent you a gift worth ${fmtCoins(p.totalCoins)} coins`;
+    }
+    case 'PK_CHALLENGE':
+      return `${p.challengerDisplayName ?? 'A host'} challenged you to a PK battle`;
+    case 'PK_RESULT': {
+      const vs = p.opponentDisplayName ? ` against ${p.opponentDisplayName}` : '';
+      const score = `${fmtCoins(p.myScore)}–${fmtCoins(p.opponentScore)}`;
+      if (p.result === 'WIN') return `You won your PK battle${vs} (${score})`;
+      if (p.result === 'LOSS') return `You lost your PK battle${vs} (${score})`;
+      return `Your PK battle${vs} ended in a draw (${score})`;
+    }
+    case 'SEAT_APPROVED':
+      return `Your seat request in ${p.roomTitle ?? 'a party room'} was approved`;
+    case 'WITHDRAWAL_UPDATE': {
+      const amount = `${fmtCoins(p.amountCoins)} coins`;
+      const reason = p.reason ? `: ${p.reason}` : '';
+      if (p.status === 'PAID') return `Your withdrawal of ${amount} was paid`;
+      if (p.status === 'REJECTED') return `Your withdrawal of ${amount} was rejected${reason}. The coins were returned to your balance.`;
+      if (p.status === 'FAILED') return `Your withdrawal of ${amount} failed${reason}. The coins were returned to your balance.`;
+      return `Your withdrawal of ${amount} was approved and is being processed`;
+    }
+    case 'COIN_PURCHASE':
+      return `${fmtCoins(p.coins)} coins were added to your wallet`;
+    case 'CREATOR_APPLICATION':
+      return p.status === 'APPROVED'
+        ? 'Your creator application was approved'
+        : `Your creator application was not approved${p.reason ? `: ${p.reason}` : ''}`;
+    case 'MISSED_CALL':
+      return `Missed call from ${p.callerDisplayName ?? 'someone'}`;
+    case 'PROFILE_VISIT':
+      return `${p.visitorName ?? 'Someone'} viewed your profile`;
+    default:
+      if (n.type === 'SYSTEM' && p.event === 'video_ready') return `Your video “${p.title ?? ''}” is ready`;
+      if (n.type === 'SYSTEM' && p.event === 'video_failed') return `Your video “${p.title ?? ''}” could not be made: ${p.reason ?? 'please try again'}`;
+      return 'System notification';
   }
-  if (n.type === 'MESSAGE') return 'New message';
-  if (n.type === 'SECURITY') return 'Security alert on your account';
-  return 'System notification';
 }
 
 function iconForType(n: AppNotification): React.ComponentProps<typeof Ionicons>['name'] {
-  if (n.type === 'FOLLOW') return 'person-add';
-  if (n.type === 'MESSAGE') return 'chatbubble';
-  if (n.type === 'SECURITY') return 'shield-checkmark';
-  return 'information-circle';
+  switch (n.type) {
+    case 'FOLLOW':
+      return 'person-add';
+    case 'MESSAGE':
+      return 'chatbubble';
+    case 'SECURITY':
+      return 'shield-checkmark';
+    case 'GIFT_RECEIVED':
+      return 'gift';
+    case 'PK_CHALLENGE':
+    case 'PK_RESULT':
+      return 'flash';
+    case 'SEAT_APPROVED':
+      return 'people';
+    case 'WITHDRAWAL_UPDATE':
+      return 'cash';
+    case 'COIN_PURCHASE':
+      return 'wallet';
+    case 'CREATOR_APPLICATION':
+      return 'ribbon';
+    case 'MISSED_CALL':
+      return 'call';
+    case 'PROFILE_VISIT':
+      return 'eye';
+    default:
+      return 'information-circle';
+  }
 }
 
 export function InboxScreen() {
   const navigation = useNavigation<NativeStackNavigationProp<AppStackParamList>>();
   const queryClient = useQueryClient();
+  const profileSheet = useProfileSheet();
   const [activeTab, setActiveTab] = useState<'notifications' | 'messages'>('notifications');
 
   const notificationsQuery = useQuery({
     queryKey: ['notifications'],
     queryFn: () => fetchNotifications(false),
-    refetchInterval: 15000,
+    // New notifications now arrive as 'notification:new' pushes (see
+    // useDirectMessagePush); this is only a fallback for a dropped socket.
+    refetchInterval: 60000,
   });
 
   const conversationsQuery = useQuery({
@@ -80,13 +158,13 @@ export function InboxScreen() {
 
   const handleNotificationPress = (n: AppNotification) => {
     if (!n.read) markReadMutation.mutate(n.id);
-    if (n.type === 'FOLLOW') {
-      const followerId = (n.payload as any)?.followerId;
-      // FollowList doesn't support opening a specific user's own
-      // profile from here yet — a real, separate gap, not faked with a
-      // navigation call to a screen that doesn't accept this param.
-      if (followerId) navigation.navigate('FollowList', { mode: 'followers' });
+    // Tapping "X viewed your profile" opens X's profile card.
+    if (n.type === 'PROFILE_VISIT' && (n.payload as any)?.visitorId) {
+      profileSheet.open((n.payload as any).visitorId);
+      return;
     }
+    const route = routeForNotification(n.type, n.payload);
+    if (route) navigation.navigate(route.name as any, route.params as any);
   };
 
   return (
@@ -119,7 +197,7 @@ export function InboxScreen() {
         notificationsQuery.isLoading ? (
           <ActivityIndicator color={colors.primary} style={{ marginTop: spacing.xl }} />
         ) : (notificationsQuery.data ?? []).length === 0 ? (
-          <EmptyState icon="notifications" title="No notifications yet" subtitle="Follows and alerts will land here" />
+          <EmptyState icon="notifications" title="No notifications yet" subtitle="Gifts, PK results, payouts and more will land here" />
         ) : (
           <FlatList
             data={notificationsQuery.data ?? []}
@@ -147,11 +225,23 @@ export function InboxScreen() {
       ) : conversationsQuery.isLoading ? (
         <ActivityIndicator color={colors.primary} style={{ marginTop: spacing.xl }} />
       ) : (conversationsQuery.data ?? []).length === 0 ? (
-        <EmptyState icon="chatbubble-ellipses" title="No messages yet" subtitle="Conversations will land here" />
+        <View>
+          <EmptyState icon="chatbubble-ellipses" title="No messages yet" subtitle="Find someone and start a private chat" />
+          <Pressable style={styles.newChat} onPress={() => navigation.navigate('Search')}>
+            <Ionicons name="create-outline" size={18} color="#FFF" />
+            <Text style={styles.newChatText}>New message</Text>
+          </Pressable>
+        </View>
       ) : (
         <FlatList
           data={conversationsQuery.data ?? []}
           keyExtractor={(c) => c.userId}
+          ListHeaderComponent={
+            <Pressable style={styles.newChat} onPress={() => navigation.navigate('Search')}>
+              <Ionicons name="create-outline" size={18} color="#FFF" />
+              <Text style={styles.newChatText}>New message</Text>
+            </Pressable>
+          }
           contentContainerStyle={styles.list}
           renderItem={({ item, index }) => (
             <FadeInUp index={index}>
@@ -206,6 +296,8 @@ function EmptyState({
 }
 
 const styles = StyleSheet.create({
+  newChat: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, alignSelf: 'center', backgroundColor: colors.primary, borderRadius: 999, paddingHorizontal: 18, paddingVertical: 10, marginVertical: spacing.sm },
+  newChatText: { color: '#FFF', fontWeight: '800', fontSize: 13 },
   container: { flex: 1 },
   header: {
     flexDirection: 'row',

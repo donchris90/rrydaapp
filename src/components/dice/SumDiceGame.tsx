@@ -1,345 +1,681 @@
-import React, { useState, useEffect, useRef } from 'react';
-import confetti from 'canvas-confetti';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { View, StyleSheet, ScrollView, Alert, Platform, Animated } from 'react-native';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import * as Crypto from 'expo-crypto';
+import { colors } from './luckyNumberTheme';
+import { DiceHeader } from './DiceHeader';
 import { DiceReels } from './DiceReels';
+import { DiceStatusBar } from './DiceStatusBar';
+import { DiceTrendRow } from './DiceTrendRow';
 import { DiceBoard } from './DiceBoard';
 import { DiceBettingBar } from './DiceBettingBar';
 import { DiceHistoryModal } from './DiceHistoryModal';
-import { FairnessModal } from '../FairnessModal';
-import { HelpModal } from '../HelpModal';
-import type { DiceRoundStatus, DiceRoundHistory, DicePlayerBet, UserRoundRecord } from '../../types';
-import { createInitialDiceHistory, getTheoreticalMultiplier } from '../../utils/diceFairness';
-import { audio } from '../../utils/audio';
+import { DiceHelpModal } from './DiceHelpModal';
+import { DiceLeaderboardModal } from './DiceLeaderboardModal';
+import { DiceResultBoard } from './DiceResultBoard';
+import { DiceStreakBadge } from './DiceStreakBadge';
+import { DiceSoundSettingsModal } from './DiceSoundSettingsModal';
+import { DiceGameHistory } from './DiceGameHistory';
+import type {
+  DiceRoundStatus,
+  DiceRoundHistory,
+  QuickBetType,
+  NumberBetMap,
+  UserRoundRecord,
+  RoundResultSummary,
+  RoundOutcomeType,
+  SoundSettings,
+} from './luckyNumberTypes';
+import { getCategoryDistribution } from '../../utils/diceFairness';
+import {
+  DEFAULT_SOUND_SETTINGS,
+  playBetSound,
+  playWinSound,
+  playLoseSound,
+  onLoseSound,
+} from '../../utils/diceAudio';
+import {
+  fetchRounds,
+  fetchMyEntries,
+  fetchHistory,
+  placeEntry,
+  fetchLiveStats,
+  type GameRound,
+} from '../../api/games';
+
+const GAME_CODE = 'SUM_DICE';
 
 interface SumDiceGameProps {
-  balance: number;
-  onUpdateBalance: (newBalance: number) => void;
-  onOpenFairness?: () => void;
+  balance?: number;
+  // Kept for backward compatibility with mobile/src/App.tsx — a separate,
+  // web-only (canvas-confetti, <div>/<main> DOM markup) duplicate of this
+  // whole game, unreachable from the real React Native navigation graph
+  // (see the audit's duplicate-code section). No longer used by this
+  // component itself: wallet updates now happen for real, server-side,
+  // and this file invalidates the shared `wallet` query on success
+  // instead of asking a parent to track balance in local state.
+  onUpdateBalance?: (newBalance: number) => void;
+  onClose?: () => void;
   onRecordResult?: (record: UserRoundRecord) => void;
 }
 
-const ALL_NUMBERS = Array.from({ length: 28 }, (_, i) => i);
-const SMALL_NUMBERS = ALL_NUMBERS.filter((n) => n < 14);
-const BIG_NUMBERS = ALL_NUMBERS.filter((n) => n >= 14);
-const EVEN_NUMBERS = ALL_NUMBERS.filter((n) => n % 2 === 0);
-const ODD_NUMBERS = ALL_NUMBERS.filter((n) => n % 2 !== 0);
+// ---------------------------------------------------------------------
+// This component previously ran an entirely local simulation: dice were
+// rolled with Math.random() on-device, payouts used a probability-weighted
+// "98.5% RTP" multiplier (getTheoreticalMultiplier) that has never matched
+// the real backend's economics (a single flat payoutMultiplier from
+// GameDefinition.rulesJson — 9x for every number, see prisma/seed.ts and
+// games/sum-dice-rules.ts's computeSumDiceReward), and balance was updated
+// only in local React state via a prop from SumDiceScreen that itself
+// defaulted to a hardcoded 403029 and was never fed a real value by
+// navigation. fetchRounds/placeEntry/fetchMyEntries were never called.
+//
+// The backend deliberately never exposes the payout multiplier ahead of
+// settlement (see games.controller.ts's myEntries() comment: recomputing
+// it client-side "would drift" the moment an admin changes rulesJson) — so
+// this rewrite does not show a pre-bet "potential payout" figure. It shows
+// the real amount only once the round is actually settled, from the real
+// GameEntry.rewardAmount.
+// ---------------------------------------------------------------------
 
-export function SumDiceGame({ balance, onUpdateBalance, onRecordResult }: SumDiceGameProps) {
-  // Round lifecycle state
-  const [roundStatus, setRoundStatus] = useState<DiceRoundStatus>('OPEN');
-  const [roundNumber, setRoundNumber] = useState<number>(8921);
-  const [countdownSeconds, setCountdownSeconds] = useState<number>(12);
-  const [dice, setDice] = useState<[number, number, number]>([3, 5, 6]);
-  const [lockedReels, setLockedReels] = useState<[boolean, boolean, boolean]>([true, true, true]);
-  const [totalPool, setTotalPool] = useState<number>(12450);
-  const [poolDistribution, setPoolDistribution] = useState<Record<number, number>>({});
+export function SumDiceGame({
+  balance = 0,
+  onClose,
+  onRecordResult = () => {},
+}: SumDiceGameProps) {
+  const queryClient = useQueryClient();
 
-  // Betting state
-  const [selectedNumbers, setSelectedNumbers] = useState<Set<number>>(new Set());
-  const [stakePerNumber, setStakePerNumber] = useState<number>(50);
-  const [hasPlacedBet, setHasPlacedBet] = useState<boolean>(false);
-  const [activeUserBet, setActiveUserBet] = useState<{ numbers: number[]; stake: number } | null>(null);
+  // Betting State — still fully local until confirmed, exactly as before.
+  const [currentChip, setCurrentChip] = useState<number>(10);
+  const [bets, setBets] = useState<NumberBetMap>({});
+  const [activeCategory, setActiveCategory] = useState<QuickBetType>('E');
 
-  // History & modals
-  const [history, setHistory] = useState<DiceRoundHistory[]>(() => createInitialDiceHistory());
-  const [isHistoryModalOpen, setIsHistoryModalOpen] = useState<boolean>(false);
-  const [isFairnessModalOpen, setIsFairnessModalOpen] = useState<boolean>(false);
-  const [isHelpModalOpen, setIsHelpModalOpen] = useState<boolean>(false);
+  // Cosmetic-only slot-reel digits while waiting on settlement — these are
+  // NOT the game result, just a spinning animation. The real result comes
+  // from displayRound.result once status is SETTLED (see below).
+  const [dice, setDice] = useState<[number, number, number]>([0, 0, 0]);
+  const [winningNumber, setWinningNumber] = useState<number | null>(null);
 
-  // Simulated active other bets
-  const [liveBets, setLiveBets] = useState<DicePlayerBet[]>([]);
+  // Result Board State
+  const [showResultBoard, setShowResultBoard] = useState(false);
+  const [lastRoundResult, setLastRoundResult] = useState<RoundResultSummary | null>(null);
+  const [settledCountdown, setSettledCountdown] = useState<number>(5);
 
-  // Sound ref for timer ticks
-  const timerRef = useRef<NodeJS.Timeout | null>(null);
+  // Win streak — session-only, incremented strictly from real observed
+  // settlement outcomes below (never seeded with a fake starting value,
+  // unlike the old winStreak=3/bestStreak=5 defaults). A persisted,
+  // cross-session streak would need a new backend field; out of scope here.
+  const [winStreak, setWinStreak] = useState<number>(0);
+  const [bestStreak, setBestStreak] = useState<number>(0);
+  const [isStreakGlowing, setIsStreakGlowing] = useState<boolean>(false);
 
-  // Initialize pool distribution
-  useEffect(() => {
-    const initialPool: Record<number, number> = {};
-    ALL_NUMBERS.forEach((n) => {
-      initialPool[n] = Math.floor(100 + Math.random() * 800);
-    });
-    setPoolDistribution(initialPool);
-  }, [roundNumber]);
+  // Modals
+  const [showHistory, setShowHistory] = useState(false);
+  const [showHelp, setShowHelp] = useState(false);
+  const [showLeaderboard, setShowLeaderboard] = useState(false);
+  const [showSoundSettings, setShowSoundSettings] = useState(false);
 
-  // Round countdown and resolution engine
-  useEffect(() => {
-    if (roundStatus === 'OPEN') {
-      if (countdownSeconds > 0) {
-        timerRef.current = setTimeout(() => {
-          setCountdownSeconds((s) => {
-            const next = s - 1;
-            if (next <= 3 && next > 0) {
-              audio.playCountdownTick(false);
-            } else if (next === 0) {
-              audio.playCountdownTick(true);
-            }
-            return next;
-          });
-        }, 1000);
-      } else {
-        // Close bets and start rolling!
-        startResolution();
-      }
+  const [soundSettings, setSoundSettings] = useState<SoundSettings>(() => {
+    if (typeof window !== 'undefined') {
+      try {
+        const cached = localStorage.getItem('rryda_dice_sound_settings');
+        if (cached) return JSON.parse(cached);
+      } catch {}
     }
-    return () => {
-      if (timerRef.current) clearTimeout(timerRef.current);
-    };
-  }, [roundStatus, countdownSeconds]);
+    return DEFAULT_SOUND_SETTINGS;
+  });
 
-  // Start resolution sequence
-  const startResolution = () => {
-    setRoundStatus('RESOLVING');
-    setLockedReels([false, false, false]);
+  const handleUpdateSoundSettings = useCallback((newSettings: SoundSettings) => {
+    setSoundSettings(newSettings);
+    if (typeof window !== 'undefined') {
+      try {
+        localStorage.setItem('rryda_dice_sound_settings', JSON.stringify(newSettings));
+      } catch {}
+    }
+  }, []);
 
-    // Pre-determine outcome using pseudo-fair numbers
-    const outcomeD1 = Math.floor(Math.random() * 10);
-    const outcomeD2 = Math.floor(Math.random() * 10);
-    const outcomeD3 = Math.floor(Math.random() * 10);
-    const targetDice: [number, number, number] = [outcomeD1, outcomeD2, outcomeD3];
-    const winningSum = outcomeD1 + outcomeD2 + outcomeD3;
+  // Screen-Shake Animation for tactile Lose feedback — unchanged.
+  const shakeAnimX = useRef(new Animated.Value(0)).current;
+  const shakeAnimY = useRef(new Animated.Value(0)).current;
+  const loseFlashAnim = useRef(new Animated.Value(0)).current;
 
-    // Staggered reel locks:
-    // Reel 1 locks after 1.5s
-    setTimeout(() => {
-      setDice((prev) => [targetDice[0], prev[1], prev[2]]);
-      setLockedReels([true, false, false]);
-      audio.playReelLock();
-    }, 1500);
+  const triggerScreenShake = useCallback(() => {
+    shakeAnimX.setValue(0);
+    shakeAnimY.setValue(0);
+    loseFlashAnim.setValue(1);
 
-    // Reel 2 locks after 2.6s
-    setTimeout(() => {
-      setDice((prev) => [targetDice[0], targetDice[1], prev[2]]);
-      setLockedReels([true, true, false]);
-      audio.playReelLock();
-    }, 2600);
+    Animated.parallel([
+      Animated.sequence([
+        Animated.timing(shakeAnimX, { toValue: -12, duration: 40, useNativeDriver: true }),
+        Animated.timing(shakeAnimX, { toValue: 12, duration: 40, useNativeDriver: true }),
+        Animated.timing(shakeAnimX, { toValue: -9, duration: 45, useNativeDriver: true }),
+        Animated.timing(shakeAnimX, { toValue: 9, duration: 45, useNativeDriver: true }),
+        Animated.timing(shakeAnimX, { toValue: -5, duration: 50, useNativeDriver: true }),
+        Animated.timing(shakeAnimX, { toValue: 5, duration: 50, useNativeDriver: true }),
+        Animated.timing(shakeAnimX, { toValue: -2, duration: 45, useNativeDriver: true }),
+        Animated.timing(shakeAnimX, { toValue: 0, duration: 45, useNativeDriver: true }),
+      ]),
+      Animated.sequence([
+        Animated.timing(shakeAnimY, { toValue: 8, duration: 40, useNativeDriver: true }),
+        Animated.timing(shakeAnimY, { toValue: -8, duration: 40, useNativeDriver: true }),
+        Animated.timing(shakeAnimY, { toValue: 5, duration: 45, useNativeDriver: true }),
+        Animated.timing(shakeAnimY, { toValue: -5, duration: 45, useNativeDriver: true }),
+        Animated.timing(shakeAnimY, { toValue: 2, duration: 50, useNativeDriver: true }),
+        Animated.timing(shakeAnimY, { toValue: 0, duration: 50, useNativeDriver: true }),
+      ]),
+      Animated.timing(loseFlashAnim, { toValue: 0, duration: 450, useNativeDriver: true }),
+    ]).start();
+  }, [shakeAnimX, shakeAnimY, loseFlashAnim]);
 
-    // Reel 3 locks after 3.7s -> Settle round
-    setTimeout(() => {
-      setDice(targetDice);
-      setLockedReels([true, true, true]);
-      setRoundStatus('SETTLED');
-      audio.playReelLock();
+  useEffect(() => {
+    const unsubscribe = onLoseSound(triggerScreenShake);
+    return () => unsubscribe();
+  }, [triggerScreenShake]);
 
-      // Check if user won
-      if (activeUserBet && activeUserBet.numbers.includes(winningSum)) {
-        const mult = getTheoreticalMultiplier(winningSum);
-        const winPayout = Math.floor(activeUserBet.stake * mult);
-        onUpdateBalance(balance + winPayout);
-        audio.playGrandWin();
-        confetti({
-          particleCount: 80,
-          spread: 70,
-          origin: { y: 0.6 },
-          colors: ['#FFB800', '#00E701', '#FFFFFF'],
-        });
+  // ---------------------------------------------------------------------
+  // Real round lifecycle. Rounds are created/opened/locked/settled by the
+  // server's own scheduler (RoundService/SettlementService) — nothing
+  // here decides a dice roll or a payout.
+  // ---------------------------------------------------------------------
+  const roundsQuery = useQuery({
+    queryKey: ['games', GAME_CODE, 'rounds'],
+    queryFn: () => fetchRounds(GAME_CODE),
+    refetchInterval: 3000,
+  });
+  const rounds = roundsQuery.data ?? [];
+  const settledRounds = rounds.filter((r) => r.status === 'SETTLED');
+  // The round currently relevant to show: whichever is open/in-flight, or
+  // else the most recently settled one (so a just-finished round's result
+  // is still readable for a few seconds after it settles).
+  const displayRound: GameRound | null =
+    rounds.find((r) => r.status === 'OPEN' || r.status === 'LOCKED' || r.status === 'RESOLVING') ??
+    settledRounds[0] ??
+    null;
 
-        if (onRecordResult) {
-          onRecordResult({
-            id: `dice-rec-${roundNumber}-${Date.now()}`,
-            roundNumber,
-            game: 'SUM_DICE',
-            resultType: 'WIN',
-            stake: activeUserBet.stake,
-            multiplier: mult,
-            outcomeDisplay: `Hit Sum ${winningSum} (${winningSum < 14 ? 'Small' : 'Big'})`,
-            profit: winPayout - activeUserBet.stake,
-            timestamp: Date.now(),
-          });
-        }
-      } else if (activeUserBet) {
-        if (onRecordResult) {
-          onRecordResult({
-            id: `dice-rec-${roundNumber}-${Date.now()}`,
-            roundNumber,
-            game: 'SUM_DICE',
-            resultType: 'LOSS',
-            stake: activeUserBet.stake,
-            multiplier: 0,
-            outcomeDisplay: `Sum ${winningSum} (${winningSum < 14 ? 'Small' : 'Big'}) missed`,
-            profit: -activeUserBet.stake,
-            timestamp: Date.now(),
-          });
-        }
-      } else {
-        if (onRecordResult) {
-          onRecordResult({
-            id: `dice-rec-${roundNumber}-${Date.now()}`,
-            roundNumber,
-            game: 'SUM_DICE',
-            resultType: 'NOT_PLAYED',
-            stake: 0,
-            multiplier: getTheoreticalMultiplier(winningSum),
-            outcomeDisplay: `Spectated: Sum ${winningSum} (${winningSum < 14 ? 'Small' : 'Big'})`,
-            profit: 0,
-            timestamp: Date.now(),
-          });
-        }
-      }
+  const roundStatus: DiceRoundStatus =
+    displayRound?.status === 'OPEN' ? 'OPEN' : displayRound?.status === 'SETTLED' ? 'SETTLED' : 'ROLLING';
 
-      // Add to history
-      const hashChars = '0123456789abcdef';
-      let roundHash = '';
-      for (let h = 0; h < 64; h++) roundHash += hashChars[Math.floor(Math.random() * hashChars.length)];
+  const myEntriesQuery = useQuery({
+    queryKey: ['games', GAME_CODE, 'myEntries', displayRound?.id],
+    queryFn: () => fetchMyEntries(displayRound!.id),
+    enabled: !!displayRound,
+    refetchInterval: displayRound && displayRound.status !== 'OPEN' ? 1500 : false,
+  });
+  const myEntry = myEntriesQuery.data?.[0] ?? null;
+  const hasPlacedBet = !!myEntry;
 
-      const newHistoryItem: DiceRoundHistory = {
-        id: `dice-round-${roundNumber}`,
-        roundNumber,
-        dice: targetDice,
-        sum: winningSum,
-        size: winningSum < 14 ? 'S' : 'B',
-        parity: winningSum % 2 === 0 ? 'E' : 'O',
-        hash: roundHash,
-        serverSeed: roundHash.split('').reverse().join(''),
-        clientSeed: 'rryda_fair_seed_lucky',
-        nonce: roundNumber,
-        timestamp: Date.now(),
-        totalPool,
-        prize: Math.floor(winningSum * 250 + 800),
+  const liveStatsQuery = useQuery({
+    queryKey: ['games', GAME_CODE, 'liveStats', displayRound?.id],
+    queryFn: () => fetchLiveStats(displayRound!.id),
+    enabled: !!displayRound && displayRound.status !== 'SETTLED',
+    refetchInterval: 1500,
+  });
+
+  const historyQuery = useQuery({
+    queryKey: ['games', GAME_CODE, 'history'],
+    queryFn: () => fetchHistory(GAME_CODE),
+    refetchInterval: 8000,
+  });
+
+  // Real settled-round history, replacing createInitialDiceHistory()'s
+  // fake seed data. Per-round "my bet"/"my outcome" fields are left
+  // undefined for rounds other than the one just played (DiceRoundHistory
+  // declares both as optional) rather than invented — a full per-round
+  // personal history would need one fetchMyEntries call per historical
+  // round, which isn't built here.
+  const history: DiceRoundHistory[] = useMemo(() => {
+    const rows = historyQuery.data ?? [];
+    return rows.map((row, index) => {
+      const sum = row.result?.sum ?? 0;
+      const isMine = displayRound?.status === 'SETTLED' && row.roundId === displayRound.id && myEntry;
+      return {
+        id: row.roundId,
+        // Real rounds have no sequential number — this is a display
+        // ordinal (most-recent = highest), not a persistent round id.
+        // The real identifier is `id` above.
+        roundNumber: rows.length - index,
+        dice: (row.result?.dice as [number, number, number] | undefined) ?? [0, 0, 0],
+        sum,
+        isSmall: sum <= 13,
+        isEven: sum % 2 === 0,
+        hash: row.roundId.slice(0, 12),
+        timestamp: row.settledAt ? new Date(row.settledAt).getTime() : Date.now(),
+        userBetTotal: isMine ? myEntry!.coinAmount : undefined,
+        winAmount: isMine ? myEntry!.rewardAmount : undefined,
+        outcome: isMine ? (myEntry!.status === 'WON' ? 'WIN' : 'LOSE') : undefined,
       };
-
-      setHistory((prev) => [newHistoryItem, ...prev.slice(0, 24)]);
-
-      // After 4.5s of showing settlement, start next round
-      setTimeout(() => {
-        setRoundNumber((r) => r + 1);
-        setRoundStatus('OPEN');
-        setCountdownSeconds(14);
-        setHasPlacedBet(false);
-        setActiveUserBet(null);
-        setSelectedNumbers(new Set());
-        setTotalPool(Math.floor(9000 + Math.random() * 12000));
-      }, 4500);
-    }, 3700);
-  };
-
-  // Toggle single number selection
-  const handleToggleNumber = (n: number) => {
-    if (roundStatus !== 'OPEN') return;
-    setSelectedNumbers((prev) => {
-      const next = new Set(prev);
-      if (next.has(n)) next.delete(n);
-      else next.add(n);
-      return next;
     });
-  };
+  }, [historyQuery.data, displayRound?.id, displayRound?.status, myEntry]);
 
-  // Shortcut categories (Small, Big, Even, Odd)
-  const handleApplyCategory = (cat: 'S' | 'B' | 'E' | 'O') => {
+  const trendLabel = useMemo(() => {
+    const recent = history.slice(0, 3);
+    const sCount = recent.filter((r) => r.isSmall).length;
+    const eCount = recent.filter((r) => r.isEven).length;
+    return `${sCount}S/${eCount}E`;
+  }, [history]);
+
+  const totalBet = Object.values(bets).reduce((acc, curr) => acc + curr, 0);
+
+  const countdownSeconds = displayRound && roundStatus === 'OPEN'
+    ? Math.max(0, Math.round((new Date(displayRound.lockAt).getTime() - Date.now()) / 1000))
+    : 0;
+
+  // Redraw the OPEN countdown against the round's real, server-set lockAt.
+  const [, forceTick] = useState(0);
+  useEffect(() => {
     if (roundStatus !== 'OPEN') return;
-    const target =
-      cat === 'S'
-        ? SMALL_NUMBERS
-        : cat === 'B'
-        ? BIG_NUMBERS
-        : cat === 'E'
-        ? EVEN_NUMBERS
-        : ODD_NUMBERS;
+    const id = setInterval(() => forceTick((n) => n + 1), 1000);
+    return () => clearInterval(id);
+  }, [roundStatus]);
 
-    setSelectedNumbers(new Set(target));
-  };
+  // Cosmetic slot-reel spin while LOCKED/RESOLVING (i.e. bets are closed
+  // and we're waiting on the server to settle) — this never determines
+  // the actual outcome, it just gives the "rolling" moment something to
+  // show. The real dice are set from displayRound.result once SETTLED,
+  // in the settlement effect below, overwriting whatever was spinning.
+  useEffect(() => {
+    if (roundStatus !== 'ROLLING') return;
+    const id = setInterval(() => {
+      setDice([Math.floor(Math.random() * 10), Math.floor(Math.random() * 10), Math.floor(Math.random() * 10)]);
+    }, 120);
+    return () => clearInterval(id);
+  }, [roundStatus]);
 
-  const handleClear = () => {
-    if (roundStatus !== 'OPEN') return;
-    setSelectedNumbers(new Set());
-  };
+  // Clear the bet slate once a genuinely new round opens.
+  const lastOpenRoundIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (roundStatus === 'OPEN' && displayRound && lastOpenRoundIdRef.current !== displayRound.id) {
+      lastOpenRoundIdRef.current = displayRound.id;
+      setActiveCategory(null);
+      setCurrentChip(Math.max(1, Number(displayRound.entryPrice) || 10));
+      setBets({});
+      setWinningNumber(null);
+    }
+  }, [roundStatus, displayRound?.id]);
 
-  // Place Bet
-  const handlePlaceBet = () => {
-    if (roundStatus !== 'OPEN' || selectedNumbers.size === 0) return;
-    const totalStake = stakePerNumber * selectedNumbers.size;
-    if (balance < totalStake) return;
+  // Fires exactly once per newly-settled round: reveals the real dice,
+  // shows the real result (win/lose/not-played) from the real GameEntry,
+  // and updates the session win-streak from a real observed outcome.
+  const shownResultForRoundIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!displayRound || displayRound.status !== 'SETTLED' || !displayRound.result) return;
+    if (shownResultForRoundIdRef.current === displayRound.id) return;
+    // Wait for the my-entries fetch for this settled round to resolve
+    // before deciding WIN/LOSE/NOT_PLAYED, so a real win isn't briefly
+    // misreported as NOT_PLAYED while the query is still in flight.
+    if (myEntriesQuery.isLoading) return;
+    shownResultForRoundIdRef.current = displayRound.id;
 
-    onUpdateBalance(balance - totalStake);
-    setHasPlacedBet(true);
-    setActiveUserBet({
-      numbers: Array.from(selectedNumbers),
-      stake: stakePerNumber,
-    });
-    setTotalPool((p) => p + totalStake);
+    const sum = displayRound.result.sum ?? 0;
+    const diceArr = (displayRound.result.dice as [number, number, number] | undefined) ?? [0, 0, 0];
+    const outcome: RoundOutcomeType = myEntry?.status === 'WON' ? 'WIN' : myEntry?.status === 'LOST' ? 'LOSE' : 'NOT_PLAYED';
 
-    // Update pool on the selected tiles
-    setPoolDistribution((prev) => {
-      const updated = { ...prev };
-      selectedNumbers.forEach((n) => {
-        updated[n] = (updated[n] || 0) + stakePerNumber;
+    setDice(diceArr);
+    setWinningNumber(sum);
+
+    if (outcome === 'WIN') {
+      playWinSound(soundSettings);
+      setWinStreak((prev) => {
+        const next = prev + 1;
+        setBestStreak((b) => Math.max(b, next));
+        return next;
       });
-      return updated;
+      setIsStreakGlowing(true);
+      setTimeout(() => setIsStreakGlowing(false), 3500);
+    } else if (outcome === 'LOSE') {
+      playLoseSound(soundSettings);
+      setWinStreak(0);
+    }
+
+    const payout = myEntry?.rewardAmount ?? 0;
+    const staked = myEntry?.coinAmount ?? 0;
+
+    setLastRoundResult({
+      outcome,
+      roundNumber: history.length + 1,
+      dice: diceArr,
+      sum,
+      isSmall: sum <= 13,
+      isEven: sum % 2 === 0,
+      betAmount: staked,
+      payoutAmount: payout,
+      netProfit: payout - staked,
+      // Derived from the real settled reward, never a client-guessed
+      // multiplier — see this file's header comment for why.
+      multiplier: staked > 0 ? Number((payout / staked).toFixed(2)) : 0,
+      selectedNumbers: myEntry?.selection ?? [],
     });
-  };
+    setSettledCountdown(5);
+    setShowResultBoard(true);
 
-  // Compute recent streak string (e.g. "14B/E · 08S/E · 21B/O")
-  const recentStreak = history
-    .slice(0, 5)
-    .map((h) => `${String(h.sum).padStart(2, '0')}${h.size}/${h.parity}`)
-    .join(' · ');
+    onRecordResult({
+      roundNumber: history.length + 1,
+      totalBet: staked,
+      winAmount: payout,
+      netProfit: payout - staked,
+      selectedNumbers: myEntry?.selection ?? [],
+      rolledSum: sum,
+      timestamp: Date.now(),
+    });
 
-  const currentWinningSum =
-    roundStatus === 'SETTLED' && lockedReels.every(Boolean)
-      ? dice[0] + dice[1] + dice[2]
-      : null;
+    queryClient.invalidateQueries({ queryKey: ['wallet'] });
+    queryClient.invalidateQueries({ queryKey: ['games', GAME_CODE, 'history'] });
+  }, [displayRound, myEntry, myEntriesQuery.isLoading, soundSettings, history.length, onRecordResult, queryClient]);
+
+  // Auto-dismiss the result celebration after a few seconds — the next
+  // round appearing is driven entirely by roundsQuery's poll, not by any
+  // local "advance round" logic.
+  useEffect(() => {
+    if (!showResultBoard) return;
+    const countdownId = setInterval(() => setSettledCountdown((c) => Math.max(0, c - 1)), 1000);
+    const closeTimer = setTimeout(() => setShowResultBoard(false), 5000);
+    return () => {
+      clearInterval(countdownId);
+      clearTimeout(closeTimer);
+    };
+  }, [showResultBoard]);
+
+  // ---------------------------------------------------------------------
+  // Betting handlers — build up the local `bets` map exactly as before;
+  // only the final submit (handleConfirmBet) now calls the real backend.
+  // ---------------------------------------------------------------------
+  const handleSelectCategory = useCallback(
+    (category: 'S' | 'B' | 'E' | 'O') => {
+      if (roundStatus !== 'OPEN' || hasPlacedBet) return;
+      playBetSound(soundSettings);
+      if (activeCategory === category) {
+        setActiveCategory(null);
+        setBets({});
+      } else {
+        setActiveCategory(category);
+        const targetBet = totalBet > 0 ? totalBet : currentChip;
+        setBets(getCategoryDistribution(category, targetBet));
+      }
+    },
+    [roundStatus, hasPlacedBet, activeCategory, totalBet, currentChip, soundSettings],
+  );
+
+  const handleToggleNumberBet = useCallback(
+    (num: number) => {
+      if (roundStatus !== 'OPEN' || hasPlacedBet) return;
+      playBetSound(soundSettings);
+      setActiveCategory(null);
+      setBets((prev) => {
+        const next = { ...prev };
+        next[num] = next[num] ? next[num] + currentChip : currentChip;
+        return next;
+      });
+    },
+    [roundStatus, hasPlacedBet, currentChip, soundSettings],
+  );
+
+  const handleIncreaseBet = useCallback(() => {
+    if (roundStatus !== 'OPEN' || hasPlacedBet) return;
+    playBetSound(soundSettings);
+    if (activeCategory) {
+      setBets(getCategoryDistribution(activeCategory, totalBet + 100));
+    } else {
+      setBets((prev) => {
+        const next: NumberBetMap = {};
+        for (const [k, v] of Object.entries(prev)) next[Number(k)] = Math.round(v * 1.25);
+        return next;
+      });
+    }
+  }, [roundStatus, hasPlacedBet, activeCategory, totalBet, soundSettings]);
+
+  const handleDecreaseBet = useCallback(() => {
+    if (roundStatus !== 'OPEN' || hasPlacedBet || totalBet <= 100) return;
+    playBetSound(soundSettings);
+    if (activeCategory) {
+      setBets(getCategoryDistribution(activeCategory, Math.max(100, totalBet - 100)));
+    } else {
+      setBets((prev) => {
+        const next: NumberBetMap = {};
+        for (const [k, v] of Object.entries(prev)) next[Number(k)] = Math.max(1, Math.round(v * 0.8));
+        return next;
+      });
+    }
+  }, [roundStatus, hasPlacedBet, activeCategory, totalBet, soundSettings]);
+
+  const handleClearBets = useCallback(() => {
+    if (roundStatus !== 'OPEN' || hasPlacedBet) return;
+    setBets({});
+    setActiveCategory(null);
+  }, [roundStatus, hasPlacedBet]);
+
+  const handleDoubleBets = useCallback(() => {
+    if (roundStatus !== 'OPEN' || hasPlacedBet || totalBet * 2 > balance) return;
+    playBetSound(soundSettings);
+    if (activeCategory) {
+      setBets(getCategoryDistribution(activeCategory, totalBet * 2));
+    } else {
+      setBets((prev) => {
+        const next: NumberBetMap = {};
+        for (const [k, v] of Object.entries(prev)) next[Number(k)] = v * 2;
+        return next;
+      });
+    }
+  }, [roundStatus, hasPlacedBet, totalBet, balance, activeCategory, soundSettings]);
+
+  const placeMutation = useMutation({
+    mutationFn: () => {
+      if (!displayRound) throw new Error('No round is open for entries right now');
+      const selection = Object.keys(bets).map(Number);
+      return placeEntry(displayRound.id, {
+        selection,
+        stakeAmount: totalBet,
+        idempotencyKey: Crypto.randomUUID(),
+      });
+    },
+    onSuccess: () => {
+      playBetSound(soundSettings);
+      queryClient.invalidateQueries({ queryKey: ['games', GAME_CODE, 'myEntries', displayRound?.id] });
+      queryClient.invalidateQueries({ queryKey: ['wallet'] });
+    },
+    onError: (error: any) => {
+      Alert.alert('Could not place bet', error?.response?.data?.message ?? 'Something went wrong');
+    },
+  });
+
+  const handleConfirmBet = useCallback(() => {
+    if (roundStatus !== 'OPEN' || hasPlacedBet || totalBet <= 0 || totalBet > balance || !displayRound) return;
+    placeMutation.mutate();
+  }, [roundStatus, hasPlacedBet, totalBet, balance, displayRound, placeMutation]);
 
   return (
-    <div className="w-full flex flex-col gap-5">
-      {/* 3D Dice Capsule & Animated Reels */}
-      <DiceReels
-        status={roundStatus}
-        countdownSeconds={countdownSeconds}
-        dice={dice}
-        lockedReels={lockedReels}
-        totalPool={totalPool}
-        recentStreak={recentStreak}
-      />
+    <Animated.View
+      style={[
+        styles.container,
+        {
+          transform: [
+            { translateX: shakeAnimX },
+            { translateY: shakeAnimY },
+          ],
+        },
+      ]}
+    >
+      {/* Background Vortex Spiral Effect */}
+      <View pointerEvents="none" style={styles.vortexBackground}>
+        <View style={styles.vortexRing1} />
+        <View style={styles.vortexRing2} />
+        <View style={styles.vortexRing3} />
+      </View>
 
-      {/* Interactive 28-Number Betting Grid */}
-      <DiceBoard
-        selectedNumbers={selectedNumbers}
-        onToggleNumber={handleToggleNumber}
-        onApplyCategory={handleApplyCategory}
-        onClear={handleClear}
-        winningSum={currentWinningSum}
-        isOpen={roundStatus === 'OPEN'}
-        poolDistribution={poolDistribution}
-      />
+      <ScrollView
+        contentContainerStyle={styles.scrollContent}
+        showsVerticalScrollIndicator={false}
+      >
+        {/* Top Header with 3D Bubble Title "LUCKY NUMBER!" */}
+        <DiceHeader
+          onClose={onClose}
+          soundSettings={soundSettings}
+          onOpenSoundSettings={() => setShowSoundSettings(true)}
+        />
 
-      {/* Betting Controls Bar */}
-      <DiceBettingBar
-        stakePerNumber={stakePerNumber}
-        onUpdateStake={setStakePerNumber}
-        selectedCount={selectedNumbers.size}
-        walletBalance={balance}
-        isOpen={roundStatus === 'OPEN'}
-        onPlaceBet={handlePlaceBet}
-        hasPlacedBet={hasPlacedBet}
-      />
+        {/* Win Streak Tracker Badge with Celebratory Glow Effect */}
+        <DiceStreakBadge
+          streak={winStreak}
+          bestStreak={bestStreak}
+          isGlowing={isStreakGlowing}
+          onPress={() => {
+            // Interactive test / celebrate on tap
+            setIsStreakGlowing(true);
+            setTimeout(() => setIsStreakGlowing(false), 3500);
+          }}
+        />
 
-      {/* Modals */}
+        {/* 3-Digit Slot Reel Result Box [ ? | ? | ? ] */}
+        <DiceReels
+          status={roundStatus}
+          dice={dice}
+          targetSum={winningNumber}
+        />
+
+        {/* Chronological Last 10 Rounds Outcomes List with Win, Lose & No Play Icons */}
+        <DiceGameHistory
+          history={history}
+          onOpenFullHistory={() => setShowHistory(true)}
+        />
+
+        {/* Status Bar (real live player count, wallet balance, server round timer) */}
+        <DiceStatusBar
+          balance={balance}
+          countdownSeconds={countdownSeconds}
+          roundStatus={roundStatus}
+          activePlayers={liveStatsQuery.data?.players ?? null}
+          onOpenLeaderboard={() => setShowLeaderboard(true)}
+          onOpenHelp={() => setShowHelp(true)}
+        />
+
+        {/* Trend Bar (2S/1E, Quick Category Buttons S, B, E, O, History Button) */}
+        <DiceTrendRow
+          trendLabel={trendLabel}
+          activeCategory={activeCategory}
+          onSelectCategory={handleSelectCategory}
+          onOpenHistory={() => setShowHistory(true)}
+          disabled={roundStatus !== 'OPEN' || hasPlacedBet}
+        />
+
+        {/* 28-Number Betting Grid (4 rows x 7 cols) */}
+        <DiceBoard
+          bets={bets}
+          winningNumber={winningNumber}
+          isSettled={roundStatus === 'SETTLED'}
+          onToggleNumberBet={handleToggleNumberBet}
+          disabled={roundStatus !== 'OPEN' || hasPlacedBet}
+        />
+
+        {/* Bottom Betting Bar (9,336 🪙 >, Stepper -, Coral Bet Button, Stepper +) */}
+        <DiceBettingBar
+          currentChip={currentChip}
+          totalBet={totalBet}
+          balance={balance}
+          roundStatus={roundStatus}
+          hasPlacedBet={hasPlacedBet}
+          onSelectChip={setCurrentChip}
+          onIncreaseBet={handleIncreaseBet}
+          onDecreaseBet={handleDecreaseBet}
+          onConfirmBet={handleConfirmBet}
+          onClearBets={handleClearBets}
+          onDoubleBets={handleDoubleBets}
+        />
+      </ScrollView>
+
+      {/* History Modal */}
       <DiceHistoryModal
-        isOpen={isHistoryModalOpen}
+        visible={showHistory}
         history={history}
-        onClose={() => setIsHistoryModalOpen(false)}
+        onClose={() => setShowHistory(false)}
       />
 
-      <FairnessModal
-        round={
-          isFairnessModalOpen
-            ? {
-                id: `round-${roundNumber}`,
-                roundNumber,
-                crashPoint: 0,
-                timestamp: Date.now(),
-                hash: history[0]?.hash || 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
-                serverSeed: '6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b',
-                clientSeed: 'rryda_fair_seed_lucky',
-                nonce: roundNumber,
-              }
-            : null
-        }
-        onClose={() => setIsFairnessModalOpen(false)}
+      {/* Rules & Odds Modal */}
+      <DiceHelpModal
+        visible={showHelp}
+        onClose={() => setShowHelp(false)}
       />
 
-      <HelpModal
-        isOpen={isHelpModalOpen}
-        onClose={() => setIsHelpModalOpen(false)}
+      {/* Leaderboard Modal */}
+      <DiceLeaderboardModal
+        visible={showLeaderboard}
+        onClose={() => setShowLeaderboard(false)}
       />
-    </div>
+
+      {/* Round Result Board (Win, Lose, or Not Played) */}
+      <DiceResultBoard
+        visible={showResultBoard}
+        result={lastRoundResult}
+        countdownSeconds={settledCountdown}
+        onClose={() => setShowResultBoard(false)}
+        onPlayAgain={() => setShowResultBoard(false)}
+      />
+
+      {/* Global Sound Settings Modal */}
+      <DiceSoundSettingsModal
+        visible={showSoundSettings}
+        settings={soundSettings}
+        onUpdateSettings={handleUpdateSoundSettings}
+        onClose={() => setShowSoundSettings(false)}
+      />
+
+      {/* Tactile Lose Vignette Pulse on Screen Shake */}
+      <Animated.View
+        pointerEvents="none"
+        style={[
+          styles.loseVignette,
+          {
+            opacity: loseFlashAnim,
+          },
+        ]}
+      />
+    </Animated.View>
   );
 }
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: '#0D1440',
+    position: 'relative',
+  },
+  loseVignette: {
+    ...(StyleSheet.absoluteFill as any),
+    backgroundColor: 'rgba(239, 68, 68, 0.16)',
+    borderWidth: 3,
+    borderColor: 'rgba(239, 68, 68, 0.65)',
+    zIndex: 99,
+  },
+  vortexBackground: {
+    ...(StyleSheet.absoluteFill as any),
+    overflow: 'hidden',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  vortexRing1: {
+    position: 'absolute',
+    width: 600,
+    height: 600,
+    borderRadius: 300,
+    borderWidth: 60,
+    borderColor: 'rgba(30, 58, 138, 0.25)',
+  },
+  vortexRing2: {
+    position: 'absolute',
+    width: 420,
+    height: 420,
+    borderRadius: 210,
+    borderWidth: 40,
+    borderColor: 'rgba(56, 189, 248, 0.15)',
+  },
+  vortexRing3: {
+    position: 'absolute',
+    width: 250,
+    height: 250,
+    borderRadius: 125,
+    borderWidth: 30,
+    borderColor: 'rgba(96, 165, 250, 0.12)',
+  },
+  scrollContent: {
+    flexGrow: 1,
+    paddingBottom: 24,
+  },
+});

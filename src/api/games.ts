@@ -9,6 +9,12 @@ export interface GameRound {
   result: { dice?: number[]; sum?: number; crashPoint?: number } | null;
   status: 'SCHEDULED' | 'OPEN' | 'LOCKED' | 'LIVE' | 'CRASHED' | 'RESOLVING' | 'SETTLED' | 'CANCELLED';
   settledAt: string | null;
+  // games.controller.ts's ROUND_SELECT already returns both of these on
+  // every round read — they just weren't declared here. commitmentHash is
+  // published up front (safe pre-settlement); revealData is the
+  // corresponding secret, only meaningful to show once settled.
+  commitmentHash: string | null;
+  revealData: string | null;
 }
 
 export interface GameEntry {
@@ -36,6 +42,16 @@ export async function placeEntry(
   params: { selection: number[]; stakeAmount: number; idempotencyKey: string; autoCashoutMultiplier?: number },
 ): Promise<GameEntry> {
   const response = await apiClient.post<GameEntry>(`/games/rounds/${roundId}/entries`, params);
+  return response.data;
+}
+
+export interface GameLiveStats {
+  players: number;
+  totalWagered: number;
+}
+
+export async function fetchLiveStats(roundId: string): Promise<GameLiveStats> {
+  const response = await apiClient.get<GameLiveStats>(`/games/rounds/${roundId}/live-stats`);
   return response.data;
 }
 
@@ -104,6 +120,12 @@ export async function fetchBigWins(gameCode: string): Promise<BigWin[]> {
 export interface CrashStatus {
   status: 'SCHEDULED' | 'OPEN' | 'LIVE' | 'CRASHED';
   multiplier: number | null;
+  // While LIVE: the curve, so the app can draw the flight smoothly between checks
+  // (multiplier = e^(growthRate x seconds)). They say nothing about when it will crash.
+  growthRate?: number;
+  elapsedMs?: number;
+  // The server's clock when it answered.
+  serverNow?: number;
 }
 
 export async function fetchCrashStatus(roundId: string): Promise<CrashStatus> {

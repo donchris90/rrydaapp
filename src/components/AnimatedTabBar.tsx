@@ -5,73 +5,54 @@ import { Ionicons } from '@expo/vector-icons';
 import type { BottomTabBarProps } from '@react-navigation/bottom-tabs';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useQuery } from '@tanstack/react-query';
-import { fetchNotifications } from '../api/notifications';
-import { fetchConversations } from '../api/messages';
+import { fetchUnreadCounts } from '../api/notifications';
 import { colors, gradients, glow, radii } from '../theme';
 
+// Nice icons configuration for the 5 requested tabs: Live, Party, Explore, Message, Profile
 const ICONS: Record<string, { filled: keyof typeof Ionicons.glyphMap; outline: keyof typeof Ionicons.glyphMap }> = {
-  Home: { filled: 'home', outline: 'home-outline' },
+  Live: { filled: 'radio', outline: 'radio-outline' },
   Party: { filled: 'people', outline: 'people-outline' },
-  Inbox: { filled: 'chatbubble-ellipses', outline: 'chatbubble-ellipses-outline' },
+  Explore: { filled: 'play-circle', outline: 'play-circle-outline' },
+  Message: { filled: 'chatbubble-ellipses', outline: 'chatbubble-ellipses-outline' },
   Profile: { filled: 'person', outline: 'person-outline' },
 };
 
-// A custom tab bar so the active tab gets a gradient pill + icon bounce
-// instead of react-navigation's flat tint-color default — the one place
-// in the nav shell that gets the "hero" gradient treatment, everything
-// else around it stays quiet.
-//
-// "GoLive" (the middle route) gets its own raised, always-gradient
-// button instead of the idle/active pill treatment every other tab
-// uses — matching the reference apps' elevated center create-action
-// button (their "upload video" slot; this app broadcasts, so it starts
-// a live session instead).
 export function AnimatedTabBar({ state, descriptors, navigation }: BottomTabBarProps) {
   const insets = useSafeAreaInsets();
 
-  // Real unread count, the same fetchNotifications endpoint InboxScreen
-  // uses — not a separate count endpoint, since list().length is
-  // already exactly that number and avoids maintaining two sources of
-  // truth for the same real data.
-  const notificationsQuery = useQuery({
-    queryKey: ['notifications'],
-    queryFn: () => fetchNotifications(true),
-    refetchInterval: 20000,
+  // One small count request instead of downloading the whole notification and
+  // conversation lists just to count them. It sits under the ['notifications']
+  // key prefix, so every existing "something changed" invalidation (a push
+  // arriving, a message read, a notification marked read) refreshes it. The
+  // old version shared the exact ['notifications'] key with the Inbox list
+  // while asking for unread-only, so the two overwrote each other's data, and
+  // it counted every unread DM twice (as a message and as its notification).
+  const countsQuery = useQuery({
+    queryKey: ['notifications', 'unread'],
+    queryFn: fetchUnreadCounts,
+    refetchInterval: 60000, // fallback only — pushes over the socket invalidate it
   });
-  // Same real conversations query InboxScreen uses — the tab badge
-  // counts unread messages too now, not just notifications, since both
-  // live under the same "Inbox" tab.
-  const conversationsQuery = useQuery({
-    queryKey: ['messages', 'conversations'],
-    queryFn: fetchConversations,
-    refetchInterval: 20000,
-  });
-  const unreadCount =
-    (notificationsQuery.data?.length ?? 0) + (conversationsQuery.data?.reduce((sum, c) => sum + c.unreadCount, 0) ?? 0);
+
+  const unreadCount = countsQuery.data?.total ?? 0;
 
   return (
     <View style={[styles.bar, { paddingBottom: Math.max(insets.bottom, 10) }]}>
       {state.routes.map((route, index) => {
         const { options } = descriptors[route.key];
         const isFocused = state.index === index;
-
         const onPress = () => {
-          const event = navigation.emit({ type: 'tabPress', target: route.key, canPreventDefault: true });
+          const event = navigation.emit({
+            type: 'tabPress',
+            target: route.key,
+            canPreventDefault: true,
+          });
           if (!isFocused && !event.defaultPrevented) {
             navigation.navigate(route.name);
           }
         };
 
-        if (route.name === 'GoLive') {
-          // Escapes up to the parent AppStack navigator rather than
-          // switching to this tab directly — the real entry point is
-          // now the unified format picker (title, format, real
-          // streamer-theme selection), not the bare GoLive screen.
-          const openFormatPicker = () => navigation.getParent()?.navigate('LiveFormatPicker' as never);
-          return <GoLiveTabItem key={route.key} focused={isFocused} onPress={openFormatPicker} />;
-        }
-
         const icon = ICONS[route.name];
+
         return (
           <TabItem
             key={route.key}
@@ -79,30 +60,12 @@ export function AnimatedTabBar({ state, descriptors, navigation }: BottomTabBarP
             iconName={icon ? (isFocused ? icon.filled : icon.outline) : 'ellipse'}
             focused={isFocused}
             onPress={onPress}
-            badgeCount={route.name === 'Inbox' ? unreadCount : 0}
+            badgeCount={route.name === 'Message' ? unreadCount : 0}
+            isParty={route.name === 'Party'}
           />
         );
       })}
     </View>
-  );
-}
-
-// Raised circular gradient button, floating above the bar rather than
-// sitting flush in it — the visual weight the reference apps give their
-// center create action. Always shows the filled gradient state (there's
-// no meaningful "idle" look for the one button whose entire job is to
-// be pressed), and doesn't bounce/scale like the other tabs since it's
-// not indicating a selected *section* the way they are.
-function GoLiveTabItem({ focused, onPress }: { focused: boolean; onPress: () => void }) {
-  return (
-    <Pressable onPress={onPress} style={styles.item} hitSlop={8}>
-      <LinearGradient colors={['#22D3EE', colors.primary, colors.pink]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={[styles.goLiveRing, glow.pink]}>
-        <View style={styles.goLiveInner}>
-          <Ionicons name="videocam" size={20} color="#FFF" />
-        </View>
-      </LinearGradient>
-      <Text style={styles.goLiveLabel}>GO LIVE</Text>
-    </Pressable>
   );
 }
 
@@ -112,40 +75,63 @@ function TabItem({
   focused,
   onPress,
   badgeCount = 0,
+  isParty = false,
 }: {
   label: string;
   iconName: keyof typeof Ionicons.glyphMap;
   focused: boolean;
   onPress: () => void;
   badgeCount?: number;
+  isParty?: boolean;
 }) {
   const progress = useRef(new Animated.Value(focused ? 1 : 0)).current;
 
   useEffect(() => {
-    Animated.spring(progress, { toValue: focused ? 1 : 0, useNativeDriver: true, speed: 30, bounciness: 9 }).start();
+    Animated.spring(progress, {
+      toValue: focused ? 1 : 0,
+      useNativeDriver: true,
+      speed: 30,
+      bounciness: 9,
+    }).start();
   }, [focused, progress]);
 
-  const scale = progress.interpolate({ inputRange: [0, 1], outputRange: [1, 1.12] });
+  const scale = progress.interpolate({ inputRange: [0, 1], outputRange: [1, 1.1] });
   const lift = progress.interpolate({ inputRange: [0, 1], outputRange: [0, -2] });
 
   return (
     <Pressable onPress={onPress} style={styles.item} hitSlop={8}>
-      <Animated.View style={{ transform: [{ scale }, { translateY: lift }] }}>
+      <Animated.View style={[styles.iconContainer, { transform: [{ scale }, { translateY: lift }] }]}>
         {focused ? (
-          <LinearGradient colors={gradients.hero} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={[styles.pill, glow.primary]}>
-            <Ionicons name={iconName} size={20} color={colors.textPrimary} />
+          <LinearGradient
+            colors={gradients.hero}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+            style={[styles.pill, glow.pink]}
+          >
+            <Ionicons name={iconName} size={20} color="#FFFFFF" />
           </LinearGradient>
         ) : (
           <View style={styles.pillIdle}>
             <Ionicons name={iconName} size={20} color={colors.textMuted} />
           </View>
         )}
+
         {badgeCount > 0 && (
           <View style={styles.badge}>
             <Text style={styles.badgeText}>{badgeCount > 9 ? '9+' : badgeCount}</Text>
           </View>
         )}
+
       </Animated.View>
+
+      <Text
+        style={[
+          styles.label,
+          { color: focused ? colors.primary : colors.textMuted, fontWeight: focused ? '800' : '600' },
+        ]}
+      >
+        {label}
+      </Text>
     </Pressable>
   );
 }
@@ -153,62 +139,74 @@ function TabItem({
 const styles = StyleSheet.create({
   bar: {
     flexDirection: 'row',
-    backgroundColor: colors.bgDeepest,
+    backgroundColor: '#FFFFFF',
     borderTopWidth: 1,
-    borderTopColor: colors.borderLight,
-    paddingTop: 10,
+    borderTopColor: '#F0F2F7',
+    paddingTop: 8,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: -3 },
+    shadowOpacity: 0.05,
+    shadowRadius: 8,
+    elevation: 8,
   },
-  item: { flex: 1, alignItems: 'center', justifyContent: 'center' },
+  item: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  iconContainer: {
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   pill: {
     width: 44,
-    height: 34,
+    height: 32,
     borderRadius: radii.pill,
     alignItems: 'center',
     justifyContent: 'center',
   },
   pillIdle: {
     width: 44,
-    height: 34,
+    height: 32,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  goLiveRing: {
-    width: 54,
-    height: 54,
-    borderRadius: radii.pill,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginTop: -26, // raises the button above the bar's top edge
-    padding: 3, // leaves the gradient visible as a ring around goLiveInner
-  },
-  goLiveInner: {
-    width: '100%',
-    height: '100%',
-    borderRadius: radii.pill,
-    backgroundColor: colors.bgDeepest,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  goLiveLabel: {
-    color: colors.pink,
-    fontSize: 9,
-    fontWeight: '800',
-    letterSpacing: 0.5,
-    marginTop: 2,
+  label: {
+    fontSize: 10,
+    marginTop: 3,
+    letterSpacing: 0.2,
   },
   badge: {
     position: 'absolute',
-    top: -4,
-    right: -4,
+    top: -2,
+    right: -2,
     minWidth: 16,
     height: 16,
     borderRadius: 8,
-    paddingHorizontal: 3,
-    backgroundColor: colors.danger,
+    paddingHorizontal: 4,
+    backgroundColor: colors.primary,
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: 1.5,
-    borderColor: colors.bgDeepest,
+    borderColor: '#FFFFFF',
   },
-  badgeText: { color: '#FFF', fontSize: 9, fontWeight: '800' },
+  badgeText: {
+    color: '#FFF',
+    fontSize: 9,
+    fontWeight: '800',
+  },
+  partyBadge: {
+    position: 'absolute',
+    top: -2,
+    right: -4,
+    backgroundColor: colors.party,
+    borderRadius: 6,
+    paddingHorizontal: 3,
+    paddingVertical: 1,
+  },
+  partyBadgeText: {
+    color: '#FFFFFF',
+    fontSize: 8,
+    fontWeight: '800',
+  },
 });

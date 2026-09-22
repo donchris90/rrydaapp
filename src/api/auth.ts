@@ -36,6 +36,12 @@ export async function updateAvatarUrl(avatarUrl: string): Promise<CurrentUser> {
   return response.data;
 }
 
+export async function updateBio(bio: string): Promise<CurrentUser> {
+  // A blank bio clears it on the server.
+  const response = await apiClient.patch<CurrentUser>('/users/me', { bio });
+  return response.data;
+}
+
 export async function fetchMyReferrals(): Promise<Referral[]> {
   const response = await apiClient.get<Referral[]>('/users/me/referrals');
   return response.data;
@@ -45,6 +51,9 @@ export interface CheckInStatus {
   streak: number;
   alreadyCheckedInToday: boolean;
   nextRewardCoins: number;
+  // Coins for streak days 1..7 (day 7 onwards pays the cap). Optional so the
+  // app still works against a backend that predates the field.
+  rewardSchedule?: number[];
 }
 
 export interface CheckInResult {

@@ -1,3 +1,9 @@
+import { LiveMediaBox } from '../../components/live/LiveMediaBox';
+import { fetchLiveMedia, type LiveMediaMessage, type LiveMediaState } from '../../api/liveMedia';
+import { GiftFlyOverlay } from '../../components/GiftFlyOverlay';
+import { fetchProfile } from '../../api/profiles';
+import { PkBox } from '../../components/live/PkBox';
+import { LiveBottomBar } from '../../components/LiveBottomBar';
 import React, { useEffect, useState } from 'react';
 import { View, Text, StyleSheet, Pressable, ActivityIndicator } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
@@ -35,6 +41,7 @@ export function LiveViewerScreen() {
   const { params } = useRoute<RouteProp<AppStackParamList, 'LiveViewer'>>();
   const insets = useSafeAreaInsets();
   const [isGiftSheetOpen, setIsGiftSheetOpen] = useState(false);
+  const [hostAvatarPos, setHostAvatarPos] = useState<{ x: number; y: number } | null>(null);
   const [isToolsSheetOpen, setIsToolsSheetOpen] = useState(false);
 
   const joinQuery = useQuery({
@@ -59,7 +66,21 @@ export function LiveViewerScreen() {
     role: 'audience',
   });
 
-  const { messages, giftEvents, sendMessage } = useLiveChat('LIVE', params.sessionId);
+  // The video the host is sharing (if any): pushed live, and fetched once on joining so
+  // someone who arrives late catches up.
+  const [media, setMedia] = useState<LiveMediaState | null>(null);
+  const [mediaAt, setMediaAt] = useState(0);
+  const applyMedia = (m: LiveMediaMessage) => {
+    if (m.active) {
+      setMedia(m);
+      setMediaAt(Date.now());
+    } else setMedia(null);
+  };
+  const { messages, giftEvents, sendMessage } = useLiveChat('LIVE', params.sessionId, { onMedia: applyMedia });
+  useEffect(() => {
+    fetchLiveMedia(params.sessionId).then(applyMedia).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [params.sessionId]);
 
   // Real PK battle detection — polls the actual missing-link endpoint
   // (pk.service.ts's findActiveForHost) rather than assuming a battle is
@@ -73,6 +94,20 @@ export function LiveViewerScreen() {
     refetchInterval: 3000,
   });
   const activePk = pkQuery.data;
+
+  // Names and the battle clock for the PK box.
+  const hostProfile = useQuery({ queryKey: ['profile', hostId], queryFn: () => fetchProfile(hostId!), enabled: !!hostId, retry: false });
+  const [clockNow, setClockNow] = useState(Date.now());
+  useEffect(() => {
+    if (!activePk) return;
+    const t = setInterval(() => setClockNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [!!activePk]);
+  const pkTimeLeft = activePk?.battle.endsAt ? Math.max(0, Math.ceil((new Date(activePk.battle.endsAt).getTime() - clockNow) / 1000)) : 0;
+  // The host you are watching may be either side of the battle.
+  const hostIsChallenger = activePk?.battle.challengerId === hostId;
+  const hostPkScore = activePk ? Number(hostIsChallenger ? activePk.battle.scoreChallenger : activePk.battle.scoreOpponent) : 0;
+  const opponentPkScore = activePk ? Number(hostIsChallenger ? activePk.battle.scoreOpponent : activePk.battle.scoreChallenger) : 0;
 
   // Joins the opponent's channel the moment their session becomes known,
   // leaves it the moment it isn't (battle ended, or the opponent isn't
@@ -121,24 +156,7 @@ export function LiveViewerScreen() {
     <View style={{ flex: 1, paddingTop: insets.top }}>
       <FloatingHeartsOverlay>
         {activePk ? (
-          <View style={styles.splitVideoRow}>
-            <View style={styles.splitVideoHalf}>
-              {remoteUid != null ? (
-                <AgoraVideoView uid={remoteUid} style={StyleSheet.absoluteFill} />
-              ) : (
-                <View style={[StyleSheet.absoluteFill, styles.splitPlaceholder]} />
-              )}
-            </View>
-            <View style={styles.splitVideoHalf}>
-              {secondaryRemoteUid != null && secondaryConnection ? (
-                <AgoraVideoView uid={secondaryRemoteUid} connection={secondaryConnection} style={StyleSheet.absoluteFill} />
-              ) : (
-                <View style={[StyleSheet.absoluteFill, styles.splitPlaceholder]}>
-                  <Ionicons name="hourglass-outline" size={24} color={colors.textMuted} />
-                </View>
-              )}
-            </View>
-          </View>
+          <LinearGradient colors={['#1A1030', '#0B0716']} style={StyleSheet.absoluteFill} />
         ) : remoteUid != null ? (
           <AgoraVideoView uid={remoteUid} style={StyleSheet.absoluteFill} />
         ) : (
@@ -165,62 +183,59 @@ export function LiveViewerScreen() {
           startedAt={session.startedAt}
           isOwnSession={session.hostId === user?.id}
           onClose={() => navigation.goBack()}
+          onAvatarPosition={setHostAvatarPos}
         />
         <GiftTicker events={giftEvents} />
-        {activePk && (
-          <PkBattleOverlay
-            battle={activePk.battle}
-            hostName={session.title}
-            opponentName={activePk.opponentSession?.title ?? 'Opponent'}
-          />
-        )}
       </View>
 
-      {/* Bottom action bar */}
-      <View style={[styles.actionBar, { paddingBottom: insets.bottom + spacing.sm }]}>
-        <LiveChatFeed messages={messages} sendMessage={sendMessage} />
-        <View style={styles.actionRow}>
-          <Pressable
-            style={styles.actionButton}
-            onPress={() => navigation.navigate('PkScreen')}
-          >
-            <Text style={styles.pkLabel}>PK</Text>
-          </Pressable>
+      {/* Gifts fly to the host's head */}
+      <GiftFlyOverlay events={giftEvents} meId={user?.id} bottomInset={insets.bottom} resolveTarget={() => hostAvatarPos} />
 
-          <Pressable style={styles.actionButton} onPress={() => setIsGiftSheetOpen(true)}>
-            <LinearGradient
-              colors={[colors.pink, colors.pinkDeep]}
-              style={[styles.actionIconCircle, glow.pink]}
-              start={{ x: 0.2, y: 0 }}
-              end={{ x: 0.8, y: 1 }}
-            >
-              <Ionicons name="gift" size={18} color={colors.textPrimary} />
-            </LinearGradient>
-            <Text style={styles.actionLabel}>Gift</Text>
-          </Pressable>
+      {/* The host's shared video, under the header (the PK box takes this spot while a PK is on) */}
+      {media && !activePk && <LiveMediaBox key={media.videoId} state={media} receivedAt={mediaAt} isHost={false} top={insets.top + 64} />}
 
-          <Pressable
-            style={styles.actionButton}
-            onPress={() => navigation.navigate('GameCenter')}
-          >
-            <LinearGradient
-              colors={gradients.gold}
-              style={[styles.actionIconCircle, glow.gold]}
-              start={{ x: 0.2, y: 0 }}
-              end={{ x: 0.8, y: 1 }}
-            >
-              <Ionicons name="game-controller" size={18} color={colors.textOnLight} />
-            </LinearGradient>
-            <Text style={styles.actionLabel}>Games</Text>
-          </Pressable>
+      {/* PK Battle: a box under the header — the host on the left, the opponent on the right */}
+      {activePk && (
+        <PkBox
+          top={insets.top + 64}
+          hostName={hostProfile.data?.displayName ?? session.title}
+          opponentName={activePk.opponentDisplayName ?? 'Opponent'}
+          hostScore={hostPkScore}
+          opponentScore={opponentPkScore}
+          timeLeft={pkTimeLeft}
+          left={
+            remoteUid != null ? (
+              <AgoraVideoView uid={remoteUid} style={StyleSheet.absoluteFill} />
+            ) : (
+              <View style={[StyleSheet.absoluteFill, styles.splitPlaceholder]} />
+            )
+          }
+          right={
+            secondaryRemoteUid != null && secondaryConnection ? (
+              <AgoraVideoView uid={secondaryRemoteUid} connection={secondaryConnection} style={StyleSheet.absoluteFill} />
+            ) : (
+              <View style={[StyleSheet.absoluteFill, styles.splitPlaceholder]}>
+                <Ionicons name="hourglass-outline" size={24} color={colors.textMuted} />
+              </View>
+            )
+          }
+        />
+      )}
 
-          <Pressable style={styles.actionButton} onPress={() => setIsToolsSheetOpen(true)}>
-            <View style={[styles.actionIconCircle, { backgroundColor: colors.surface }]}>
-              <Ionicons name="settings-outline" size={18} color={colors.textPrimary} />
-            </View>
-            <Text style={styles.actionLabel}>Settings</Text>
-          </Pressable>
-        </View>
+      {/* Bottom: the comments, then ONE bar — comment box, emoji, menu, gift. (It used
+          to be a comment box with a second row of loose buttons stacked under it.) */}
+      <View style={styles.actionBar}>
+        <LiveChatFeed messages={messages} sendMessage={sendMessage} hideInput />
+        <LiveBottomBar
+          onSend={sendMessage}
+          onGift={() => setIsGiftSheetOpen(true)}
+          bottomInset={insets.bottom}
+          menuItems={[
+            { key: 'pk', label: 'PK', icon: 'flash', onPress: () => navigation.navigate('PkScreen') },
+            { key: 'games', label: 'Games', icon: 'game-controller', onPress: () => navigation.navigate('GameCenter') },
+            { key: 'settings', label: 'Settings', icon: 'settings-outline', onPress: () => setIsToolsSheetOpen(true) },
+          ]}
+        />
       </View>
 
       <LiveToolsSheet

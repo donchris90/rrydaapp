@@ -4,10 +4,10 @@ export type AuthStackParamList = {
 };
 
 export type MainTabParamList = {
-  Home: undefined;
+  Live: undefined;
   Party: undefined;
-  GoLive: { initialTitle?: string; initialThemeColor?: string } | undefined;
-  Inbox: undefined;
+  Explore: undefined;
+  Message: undefined;
   Profile: undefined;
 };
 
@@ -23,7 +23,7 @@ export type AppStackParamList = {
   LiveViewer: { sessionId: string };
   PkScreen: undefined;
   BuyCoins: undefined;
-  CreatorCenter: undefined;
+  CreatorCenter: { defaultTab?: 'streamer' | 'creator' | 'tools' | 'agency' } | undefined;
   EditProfile: undefined;
   HelpCenter: undefined;
   Invite: undefined;
@@ -32,9 +32,29 @@ export type AppStackParamList = {
   Reward: undefined;
   Room: { roomId: string; initialVideoEnabled?: boolean };
   PreRoom: { initialMode?: 'video' | 'voice'; initialThemeColor?: string } | undefined;
+  PayoutAccount: undefined;
   CrashGame: undefined;
   Conversation: { userId: string; displayName: string | null };
   Call: { callId: string; otherUserId: string; otherUserDisplayName: string | null; isIncoming: boolean };
   LiveFormatPicker: undefined;
+  GoLive: { initialTitle?: string; initialThemeColor?: string } | undefined;
   BlockedUsers: undefined;
+  // videoId opens the feed on that video first (e.g. from "My Videos").
+  VideoFeed: { videoId?: string } | undefined;
+  VideoCreatorCenter: undefined;
+  VideoSearch: undefined;
+  VideoCamera: undefined;
+  VideoEditor: { uri: string; durationMs: number; width?: number; height?: number };
+  VideoPublish: {
+    uri: string;
+    durationMs: number;
+    trimStartMs: number;
+    trimEndMs: number;
+    speed: 0.5 | 1 | 1.5 | 2;
+    filter: string;
+    effect: string;
+    overlayUri: string | null;
+    music: { uri: string; name: string; mimeType: string; volumeOriginal: number; volumeMusic: number } | null;
+  };
+  PkHistory: undefined;
 };

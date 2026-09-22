@@ -18,11 +18,7 @@ export interface PkBattle {
   winnerId: string | null;
 }
 
-// No matchmaking/random-opponent queue exists on the backend — challenge()
-// only supports challenging a specific, known user id. The reference
-// app's "Random PK"/"Team PK" modes aren't backed by anything real here;
-// only the "Friend PK" (challenge a specific person) shape is buildable
-// honestly today.
+// Challenge a specific person. They must be online (the server checks).
 export async function challengePk(opponentId: string): Promise<PkBattle> {
   const response = await apiClient.post<PkBattle>(`/pk/challenge/${opponentId}`);
   return response.data;
@@ -49,6 +45,7 @@ export async function fetchIncomingPk(): Promise<PkBattle[]> {
 export interface ActivePkForHost {
   battle: PkBattle;
   opponentId: string;
+  opponentDisplayName: string | null;
   // Null is a real, meaningful state — the battle is active but the
   // opponent isn't currently broadcasting. See pk.service.ts's
   // findActiveForHost() comment.
@@ -61,5 +58,60 @@ export interface ActivePkForHost {
 // error) when there's no active battle for this host at all.
 export async function fetchActivePkForHost(hostId: string): Promise<ActivePkForHost | null> {
   const response = await apiClient.get<ActivePkForHost | null>(`/pk/active-for-host/${hostId}`);
+  return response.data;
+}
+
+// ── History ──────────────────────────────────────────────────────
+
+export interface PkHistoryEntry {
+  id: string;
+  opponentId: string;
+  opponentDisplayName: string | null;
+  // Strings for the same reason PkBattle's scores are (BigInt on the backend).
+  myScore: string;
+  opponentScore: string;
+  result: 'WIN' | 'LOSS' | 'DRAW';
+  startedAt: string | null;
+  settledAt: string | null;
+}
+
+export interface PkHistory {
+  record: { wins: number; losses: number; draws: number };
+  battles: PkHistoryEntry[];
+}
+
+// Newest first. Pass `before` (settledAt of the last row loaded) to page.
+export async function fetchPkHistory(params: { limit?: number; before?: string } = {}): Promise<PkHistory> {
+  const response = await apiClient.get<PkHistory>('/pk/history', { params });
+  return response.data;
+}
+
+export type PkCategory = 'friends' | 'agency' | 'random';
+
+export interface PkCandidate {
+  userId: string;
+  displayName: string | null;
+  avatarUrl: string | null;
+  // Set when they are broadcasting right now.
+  live: { sessionId: string; title: string } | null;
+}
+
+// Who can be challenged, ONLINE right now:
+//   friends - people you follow who follow you back
+//   agency  - creators in your agency
+//   random  - creators who are online
+export async function fetchPkCandidates(category: PkCategory) {
+  const response = await apiClient.get<{ category: PkCategory; onlineCount: number; candidates: PkCandidate[] }>('/pk/candidates', { params: { category } });
+  return response.data;
+}
+
+// "Random match": the server picks an online creator and challenges them.
+export async function randomPk() {
+  const response = await apiClient.post<{ battle: PkBattle; opponent: { userId: string; displayName: string | null; avatarUrl: string | null } }>('/pk/random');
+  return response.data;
+}
+
+export async function declinePk(battleId: string): Promise<PkBattle> {
+  const response = await apiClient.post<PkBattle>(`/pk/${battleId}/decline`);
   return response.data;
 }

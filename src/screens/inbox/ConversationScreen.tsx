@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { FlatList, KeyboardAvoidingView, Platform, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Alert, FlatList, KeyboardAvoidingView, Platform, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation, useRoute, type RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -8,18 +8,17 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { fetchConversation, sendDirectMessage, markConversationRead, type DirectMessage } from '../../api/messages';
 import { initiateCall } from '../../api/calls';
 import { useAuth } from '../../auth/AuthContext';
+import { useDmTyping } from '../../live/useDmTyping';
 import { GradientBackground } from '../../components/GradientBackground';
 import { colors, radii, spacing, type } from '../../theme';
 import type { AppStackParamList } from '../../navigation/types';
 
 type ConversationRouteProp = RouteProp<AppStackParamList, 'Conversation'>;
 
-// Real messages, real send, real read receipts — polled every 3s rather
-// than push-delivered. True real-time delivery would need a user-
-// presence/socket-mapping layer this backend's realtime gateway doesn't
-// have yet (it tracks room/live *contexts* to join, not "which socket
-// belongs to which user" globally, which direct messaging actually
-// needs). A real, working v1, with an honest limit — not hidden.
+// Real messages, real send, real read receipts. New messages arrive as
+// 'dm:message' pushes, written into this query's cache by the app-wide
+// useDirectMessagePush listener; the 30s poll below is only a fallback for
+// a socket that dropped without noticing.
 export function ConversationScreen() {
   const navigation = useNavigation<NativeStackNavigationProp<AppStackParamList>>();
   const route = useRoute<ConversationRouteProp>();
@@ -29,11 +28,12 @@ export function ConversationScreen() {
   const queryClient = useQueryClient();
   const [draft, setDraft] = useState('');
   const listRef = useRef<FlatList<DirectMessage>>(null);
+  const { isOtherTyping, notifyTyping, stopTyping } = useDmTyping(userId);
 
   const conversationQuery = useQuery({
     queryKey: ['messages', 'with', userId],
     queryFn: () => fetchConversation(userId),
-    refetchInterval: 3000,
+    refetchInterval: 30000,
   });
 
   useEffect(() => {
@@ -43,12 +43,33 @@ export function ConversationScreen() {
     });
   }, [userId]);
 
+  // A message that lands while this screen is open is read the moment it
+  // arrives. Guarded by the last message id already marked, since the
+  // cached copy stays `read: false` until the next refetch.
+  const lastMarkedRef = useRef<string | null>(null);
+  useEffect(() => {
+    const incomingUnread = (conversationQuery.data ?? []).filter((m) => m.senderId === userId && !m.read);
+    const latest = incomingUnread[incomingUnread.length - 1];
+    if (!latest || latest.id === lastMarkedRef.current) return;
+    lastMarkedRef.current = latest.id;
+    markConversationRead(userId).then(() => {
+      queryClient.invalidateQueries({ queryKey: ['messages', 'conversations'] });
+      queryClient.invalidateQueries({ queryKey: ['notifications'] });
+    });
+  }, [conversationQuery.data, userId]);
+
   const sendMutation = useMutation({
     mutationFn: (content: string) => sendDirectMessage(userId, content),
     onSuccess: () => {
       setDraft('');
       queryClient.invalidateQueries({ queryKey: ['messages', 'with', userId] });
       queryClient.invalidateQueries({ queryKey: ['messages', 'conversations'] });
+    },
+    // Sends used to fail silently. The server's message ("You can't message
+    // this user" when a block exists) is shown as-is; the draft is kept so
+    // nothing typed is lost.
+    onError: (error: any) => {
+      Alert.alert("Couldn't send", error?.response?.data?.message ?? 'Please try again.');
     },
   });
 
@@ -57,11 +78,15 @@ export function ConversationScreen() {
     onSuccess: (call) => {
       navigation.navigate('Call', { callId: call.id, otherUserId: userId, otherUserDisplayName: displayName, isIncoming: false });
     },
+    onError: (error: any) => {
+      Alert.alert("Couldn't start the call", error?.response?.data?.message ?? 'Please try again.');
+    },
   });
 
   const handleSend = () => {
     const trimmed = draft.trim();
     if (!trimmed) return;
+    stopTyping();
     sendMutation.mutate(trimmed);
   };
 
@@ -71,7 +96,10 @@ export function ConversationScreen() {
         <Pressable onPress={() => navigation.goBack()} hitSlop={12} style={styles.backButton}>
           <Ionicons name="arrow-back" size={22} color={colors.textPrimary} />
         </Pressable>
-        <Text style={styles.title} numberOfLines={1}>{displayName ?? 'User'}</Text>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.title} numberOfLines={1}>{displayName ?? 'User'}</Text>
+          {isOtherTyping && <Text style={styles.typingText}>typing…</Text>}
+        </View>
         <Pressable onPress={() => callMutation.mutate()} hitSlop={12} style={styles.callButton} disabled={callMutation.isPending}>
           <Ionicons name="videocam" size={22} color={colors.primary} />
         </Pressable>
@@ -105,7 +133,10 @@ export function ConversationScreen() {
           <TextInput
             style={styles.input}
             value={draft}
-            onChangeText={setDraft}
+            onChangeText={(text) => {
+              setDraft(text);
+              notifyTyping(text.trim().length > 0);
+            }}
             placeholder="Message..."
             placeholderTextColor={colors.textMuted}
             multiline
@@ -129,7 +160,8 @@ const styles = StyleSheet.create({
   },
   backButton: { padding: spacing.xs },
   callButton: { padding: spacing.xs },
-  title: { ...type.h2, color: colors.textPrimary, flex: 1 },
+  title: { ...type.h2, color: colors.textPrimary },
+  typingText: { ...type.caption, color: colors.primary },
   list: { paddingHorizontal: spacing.md, paddingVertical: spacing.sm, gap: 6, flexGrow: 1 },
   emptyText: { ...type.body, color: colors.textSecondary, textAlign: 'center', marginTop: spacing.xl },
   bubbleRow: { flexDirection: 'row' },

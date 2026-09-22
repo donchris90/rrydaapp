@@ -1,26 +1,14 @@
-import type { DiceRoundHistory } from '../types';
+import type { DiceRoundHistory, QuickBetType } from '../components/dice/luckyNumberTypes';
 
-// Compute 3 digits (0-9) from SHA-256 hash
-export function calculateDiceOutcome(hash: string): [number, number, number] {
-  // Use sequential bytes from hex hash
-  const b1 = parseInt(hash.substring(0, 2), 16);
-  const b2 = parseInt(hash.substring(2, 4), 16);
-  const b3 = parseInt(hash.substring(4, 6), 16);
-
-  const d1 = b1 % 10;
-  const d2 = b2 % 10;
-  const d3 = b3 % 10;
-
-  return [d1, d2, d3];
-}
-
-// Probability distribution count out of 1000 combinations (000 to 999)
+// Compute combination counts of 3 digits (each 0-9) that sum to `sum` (range 0..27).
+// Total combinations = 10 x 10 x 10 = 1000.
 export function getSumCombinationCount(sum: number): number {
+  if (sum < 0 || sum > 27) return 0;
   let count = 0;
-  for (let i = 0; i <= 9; i++) {
-    for (let j = 0; j <= 9; j++) {
-      const k = sum - i - j;
-      if (k >= 0 && k <= 9) {
+  for (let d1 = 0; d1 <= 9; d1++) {
+    for (let d2 = 0; d2 <= 9; d2++) {
+      const d3 = sum - d1 - d2;
+      if (d3 >= 0 && d3 <= 9) {
         count++;
       }
     }
@@ -28,52 +16,58 @@ export function getSumCombinationCount(sum: number): number {
   return count;
 }
 
-// Theoretical fair multiplier with standard 98.5% RTP
-export function getTheoreticalMultiplier(sum: number): number {
-  const combinations = getSumCombinationCount(sum);
-  if (combinations === 0) return 0;
-  // 98.5% RTP (1.5% house edge)
-  const mult = (1000 / combinations) * 0.985;
-  return Number(mult.toFixed(2));
-}
+// Proportional bet distribution across the 14 numbers in a quick-bet category,
+// exactly matching Poppo Live's bell-curve distribution seen in real play!
+export function getCategoryDistribution(
+  category: 'S' | 'B' | 'E' | 'O',
+  totalBet: number
+): Record<number, number> {
+  const result: Record<number, number> = {};
+  const targetNumbers: number[] = [];
 
-// Simulated initial dice history
-export function createInitialDiceHistory(): DiceRoundHistory[] {
-  const history: DiceRoundHistory[] = [];
-  const baseRound = 8920;
-
-  for (let i = 0; i < 20; i++) {
-    const roundNumber = baseRound - i;
-    // Generate pseudo-deterministic or random outcome
-    const d1 = Math.floor(Math.random() * 10);
-    const d2 = Math.floor(Math.random() * 10);
-    const d3 = Math.floor(Math.random() * 10);
-    const sum = d1 + d2 + d3;
-    const size = sum < 14 ? 'S' : 'B';
-    const parity = sum % 2 === 0 ? 'E' : 'O';
-
-    const hashChars = '0123456789abcdef';
-    let hash = '';
-    for (let h = 0; h < 64; h++) {
-      hash += hashChars[Math.floor(Math.random() * hashChars.length)];
-    }
-
-    history.push({
-      id: `dice-round-${roundNumber}`,
-      roundNumber,
-      dice: [d1, d2, d3],
-      sum,
-      size,
-      parity,
-      hash,
-      serverSeed: hash.split('').reverse().join(''),
-      clientSeed: 'rryda_fair_seed_lucky',
-      nonce: roundNumber,
-      timestamp: Date.now() - (i + 1) * 35000,
-      totalPool: Math.floor(8000 + Math.random() * 15000),
-      prize: Math.floor(sum * 250 + Math.random() * 2000),
-    });
+  for (let n = 0; n <= 27; n++) {
+    if (category === 'S' && n <= 13) targetNumbers.push(n);
+    else if (category === 'B' && n >= 14) targetNumbers.push(n);
+    else if (category === 'E' && n % 2 === 0) targetNumbers.push(n);
+    else if (category === 'O' && n % 2 !== 0) targetNumbers.push(n);
   }
 
-  return history;
+  // Total combinations across the target category = 500
+  const categoryTotalCombos = 500;
+  let allocated = 0;
+  const allocations: { num: number; amount: number; fraction: number }[] = [];
+
+  for (const num of targetNumbers) {
+    const combos = getSumCombinationCount(num);
+    const rawAmount = (totalBet * combos) / categoryTotalCombos;
+    let rounded = Math.round(rawAmount);
+    // Ensure at least 1 or 0
+    if (rounded < 1 && totalBet >= targetNumbers.length) rounded = 1;
+    allocations.push({
+      num,
+      amount: rounded,
+      fraction: rawAmount - Math.floor(rawAmount),
+    });
+    allocated += rounded;
+  }
+
+  // Balance rounding difference so sum equals totalBet exactly
+  let diff = totalBet - allocated;
+  if (diff !== 0) {
+    // Distribute diff to highest combinations (like sum 13 or 14)
+    const sorted = [...allocations].sort((a, b) => b.fraction - a.fraction);
+    for (let i = 0; i < Math.abs(diff) && i < sorted.length; i++) {
+      if (diff > 0) {
+        sorted[i].amount += 1;
+      } else if (sorted[i].amount > 1) {
+        sorted[i].amount -= 1;
+      }
+    }
+  }
+
+  for (const item of allocations) {
+    result[item.num] = item.amount;
+  }
+
+  return result;
 }

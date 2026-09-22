@@ -1,171 +1,141 @@
-// Design system for the app's "live entertainment" surfaces (Party, Game
-// Center, Sum Dice, Profile) and now everything else too. Palette is
-// still grounded in the reference-app screenshots analyzed earlier in
-// this project (deep purple rooms, gold coin/gift accents, hot-pink
-// highlights) — this pass extends it into a full token set (gradients,
-// type scale, shadows, motion durations) so every screen pulls from one
-// source instead of re-deriving its own purple.
+// Rryda global design system — Poppo/Bigo-inspired porcelain light theme
+// with a coordinated midnight mode. All shared surfaces, gradients, type,
+// spacing and radii are defined here so the visual language stays consistent.
+// Gradient colour lists. `as const` would give each theme its own exact literal
+// tuple type ('#FFFFFF' vs '#0B0814'), making `colors` and `midnightColors`
+// different types so neither could be used where the other is expected (the
+// theme context switches between them). A plain string tuple keeps one shared
+// type and is still what LinearGradient's `colors` prop accepts.
+const grad = (...c: [string, string, ...string[]]): readonly [string, string, ...string[]] => c;
+
 export const colors = {
-  // Backgrounds — three depths so panels can sit "in front of" the room
-  // behind them instead of everything being one flat purple.
-  bgDeepest: '#120B26', // screen edges / gradient far end
-  background: '#1A1332', // base screen fill, matches the original
-  bgElevated: '#241A3D', // gradient near end / glow blob base
-
-  surface: '#241C43', // cards, list rows
-  surfaceRaised: '#2E2453', // modals, the "on top of a card" layer
-  surfaceGlass: 'rgba(255,255,255,0.06)', // glassy overlays on top of imagery
-
-  primary: '#7B4DFF', // brighter electric violet — buttons, active states
-  primaryDeep: '#5B3DF5', // gradient end / pressed state
-  gold: '#FFC24B', // coins, gifts, wallet — warmer & brighter than before
-  goldDeep: '#F5A62E',
-  pink: '#FF3D8A', // hot pink — wins, hearts, special moments
-  pinkDeep: '#C91861',
-  live: '#FF3B5C', // reserved specifically for the LIVE badge / red dot
-
-  success: '#3DF5A0',
-  danger: '#F5495B',
-
-  textPrimary: '#FFFFFF',
-  textSecondary: '#B0A6D6', // muted lavender-grey
-  textMuted: '#7A6FA0',
-  textOnLight: '#1A1332',
+  background: '#F6F8FC',
+  bgDeepest: '#F6F8FC',
+  bgElevated: '#EFF3FA',
+  surface: '#FFFFFF',
+  surfaceRaised: '#F0F3FA',
+  surfaceGlass: 'rgba(255,255,255,0.88)',
+  primary: '#FF2E7E',
+  primaryDeep: '#E61565',
+  primaryLight: '#FFE8F1',
+  secondary: '#00C4FF',
+  secondaryDeep: '#0097DB',
+  secondaryLight: '#E5F8FF',
+  violet: '#7B42F6',
+  violetLight: '#F1ECFD',
+  gold: '#FFB800',
+  goldDeep: '#F59E0B',
+  goldLight: '#FFF7DB',
+  pink: '#FF2E7E',
+  pinkDeep: '#E61565',
+  coral: '#FF6B4A',
+  live: '#FF2D55',
+  pk: '#FF1361',
+  party: '#8A2BE2',
+  game: '#10B981',
+  success: '#10B981',
+  danger: '#EF4444',
+  textPrimary: '#14121E',
+  textSecondary: '#5E5A73',
+  textMuted: '#9692A8',
+  textWhite: '#FFFFFF',
+  textOnLight: '#14121E',
+  border: '#E8EAF2',
+  borderLight: '#F0F2F8',
+  borderGlass: 'rgba(255,255,255,0.45)',
   cardBackground: '#FFFFFF',
-  border: '#3A3268',
-  borderLight: 'rgba(255,255,255,0.10)',
-};
-
-// Named gradient stops — pass straight into <LinearGradient colors={...}>.
-export const gradients = {
-  hero: [colors.primary, colors.pink] as const, // primary CTAs, active tab pill
-  heroDeep: [colors.primaryDeep, colors.pinkDeep] as const, // pressed state
-  gold: ['#FFDD8A', colors.gold, colors.goldDeep] as const, // coins, wallet
-  screen: [colors.bgDeepest, colors.background, colors.bgElevated] as const, // full-bleed screen backdrop
-  card: ['rgba(123,77,255,0.18)', 'rgba(255,61,138,0.10)'] as const, // subtle wash on top of a card
-  glow: ['rgba(123,77,255,0.55)', 'rgba(123,77,255,0)'] as const, // decorative corner glow blob
-  glowPink: ['rgba(255,61,138,0.45)', 'rgba(255,61,138,0)'] as const,
-  shimmer: ['rgba(255,255,255,0)', 'rgba(255,255,255,0.14)', 'rgba(255,255,255,0)'] as const, // skeleton sweep
-};
-
-export const spacing = {
-  xs: 4,
-  sm: 8,
-  md: 16,
-  lg: 24,
-  xl: 32,
-  xxl: 48,
-};
-
-export const radii = {
-  sm: 8,
-  md: 12,
-  lg: 20,
-  xl: 28,
-  pill: 999,
-};
-
-// Type scale — one system family, leaning on weight/size/spacing contrast
-// rather than a second typeface (keeps this dependency-free for Expo Go).
-export const type = {
-  display: { fontSize: 32, fontWeight: '800' as const, letterSpacing: 0.2 },
-  h1: { fontSize: 26, fontWeight: '800' as const },
-  h2: { fontSize: 20, fontWeight: '700' as const },
-  body: { fontSize: 15, fontWeight: '500' as const },
-  bodyStrong: { fontSize: 15, fontWeight: '700' as const },
-  caption: { fontSize: 12, fontWeight: '600' as const },
-  stat: { fontSize: 24, fontWeight: '900' as const }, // coin counts, big numbers
-};
-
-// Colored "glow" shadows instead of default grey — reads as nightlife/neon
-// rather than generic Material elevation. iOS reads shadow*; Android
-// mostly just uses elevation, so both are set together.
-export const glow = {
-  primary: {
-    shadowColor: colors.primary,
-    shadowOpacity: 0.45,
-    shadowRadius: 16,
-    shadowOffset: { width: 0, height: 6 },
-    elevation: 8,
-  },
-  pink: {
-    shadowColor: colors.pink,
-    shadowOpacity: 0.4,
-    shadowRadius: 14,
-    shadowOffset: { width: 0, height: 6 },
-    elevation: 8,
-  },
-  gold: {
-    shadowColor: colors.gold,
-    shadowOpacity: 0.4,
-    shadowRadius: 14,
-    shadowOffset: { width: 0, height: 4 },
-    elevation: 6,
-  },
-  card: {
-    shadowColor: '#000000',
-    shadowOpacity: 0.3,
-    shadowRadius: 12,
-    shadowOffset: { width: 0, height: 4 },
-    elevation: 4,
-  },
-};
-
-// Shared motion timings so every screen's entrance/press animation feels
-// like the same app rather than each screen picking its own speed.
-export const motion = {
-  fast: 150,
-  base: 260,
-  slow: 420,
-  stagger: 55, // delay added per item in a staggered list entrance
-};
-
-// Second palette, used only by the "Me" (Profile) screen. The rest of the
-// app is the dark-purple system above; Profile instead matches the actual
-// reference-app screenshots directly (Poppo Live's "Me" tab is a light,
-// white-card UI with colorful icon chips), rather than reinterpreting it
-// in dark purple like the earlier pass did. Kept as its own export instead
-// of touching `colors` above so every other screen is unaffected — if the
-// rest of the app ever moves to a light theme, this is the seed for it.
-export const meColors = {
-  bg: '#F3F1FA', // page background — very pale lavender, not flat white
-  bgGradient: ['#F6EFF7', '#F1EEFA', '#ECF1FB'] as const, // subtle top-to-bottom wash
+  bgGradient: grad('#FFFFFF', '#F6F8FC', '#EFF3FA'),
   card: '#FFFFFF',
-  border: '#EFEDF6',
+  completionBg: '#FFE8F1', completionText: '#FF2E7E',
+  coinsGradient: grad('#FFF1B8', '#FFCE6B'),
+  earningsGradient: grad('#FFD9E6', '#FFB6D0'),
+  vipGradient: grad('#FFE3A3', '#F7C567'), vipText: '#8A5A00',
+  noticeGradient: grad('#7B42F6', '#5B3DF5'),
+  chipRed: '#FF6B6B', chipOrange: '#FFA53D', chipTeal: '#2AD2B0', chipPink: '#FF4D8D',
+  chipGreen: '#31C48D', chipPurple: '#8B5CF6', chipBlue: '#4D8DFF', chipYellow: '#F5B93D',
+};
 
-  textPrimary: '#221F33',
-  textSecondary: '#9490A6',
-  textMuted: '#B4B0C4',
+export const midnightColors = {
+  ...colors,
+  background: '#0B0814',
+  bgDeepest: '#0B0814',
+  bgElevated: '#171328',
+  surface: '#171328',
+  surfaceRaised: '#211A39',
+  surfaceGlass: 'rgba(23,19,40,0.90)',
+  primaryLight: '#3B1829',
+  secondaryLight: '#102D39',
+  violetLight: '#281B4B',
+  goldLight: '#3A2B09',
+  textPrimary: '#F7F4FF',
+  textSecondary: '#B9B1CC',
+  textMuted: '#817A97',
+  textOnLight: '#F7F4FF',
+  border: '#2B2342',
+  borderLight: 'rgba(255,255,255,0.10)',
+  borderGlass: 'rgba(255,255,255,0.12)',
+  cardBackground: '#171328',
+  bgGradient: grad('#0B0814', '#120E22', '#171328'),
+  card: '#171328',
+  completionBg: '#3B1829', completionText: '#FF5A98',
+  coinsGradient: grad('#4A3A12', '#6B5318'),
+  earningsGradient: grad('#4A1E32', '#6B2848'),
+  vipGradient: grad('#4A3817', '#6B511F'), vipText: '#FFD98A',
+  noticeGradient: grad('#3B1A58', '#281B4B'),
+  chipRed: '#B83E5D', chipOrange: '#B66A28', chipTeal: '#238C79', chipPink: '#B63B72',
+  chipGreen: '#248D69', chipPurple: '#6845B6', chipBlue: '#3C69B6', chipYellow: '#A77D24',
+};
 
-  completionBg: '#FFE9EA',
-  completionText: '#FF4D67',
+export const gradients = {
+  hero: ['#FF2E7E', '#FF6B4A'] as const,
+  heroDeep: ['#E61565', '#E8532F'] as const,
+  bigoCyan: ['#00C4FF', '#7B42F6'] as const,
+  gold: ['#FFD200', '#FF9500'] as const,
+  goldCrown: ['#FFD200', '#FF9500'] as const,
+  pkBattle: ['#FF1361', '#FF6B00'] as const,
+  partyRoom: ['#9D4EDD', '#5B3DF5'] as const,
+  gameCenter: ['#00E676', '#00B0FF'] as const,
+  screen: ['#FFFFFF', '#F6F8FC', '#EFF3FA'] as const,
+  screenMidnight: ['#0B0814', '#120E22', '#171328'] as const,
+  card: ['rgba(255,46,126,0.08)', 'rgba(0,196,255,0.06)'] as const,
+  glow: ['rgba(0,196,255,0.28)', 'rgba(0,196,255,0)'] as const,
+  glowPink: ['rgba(255,46,126,0.28)', 'rgba(255,46,126,0)'] as const,
+  cardScrim: ['transparent', 'rgba(12,8,28,0.40)', 'rgba(10,6,24,0.88)'] as const,
+  shimmer: ['rgba(255,255,255,0)', 'rgba(255,255,255,0.40)', 'rgba(255,255,255,0)'] as const,
+};
 
-  coinsGradient: ['#FFE9B0', '#FFCE6B'] as const,
+export const spacing = { xs: 4, sm: 8, md: 14, lg: 20, xl: 28, xxl: 40 };
+export const radii = { xs: 6, sm: 10, md: 14, lg: 18, xl: 24, pill: 999 };
+export const type = {
+  display: { fontSize: 30, fontWeight: '900' as const, letterSpacing: -0.5 },
+  h1: { fontSize: 24, fontWeight: '800' as const, letterSpacing: -0.3 },
+  h2: { fontSize: 18, fontWeight: '700' as const },
+  body: { fontSize: 14, fontWeight: '500' as const },
+  bodyStrong: { fontSize: 14, fontWeight: '700' as const },
+  caption: { fontSize: 12, fontWeight: '600' as const },
+  captionSmall: { fontSize: 10, fontWeight: '700' as const },
+  stat: { fontSize: 22, fontWeight: '900' as const },
+};
+export const glow = {
+  primary: { shadowColor: '#FF2E7E', shadowOpacity: 0.28, shadowRadius: 12, shadowOffset: { width: 0, height: 5 }, elevation: 6 },
+  pink: { shadowColor: '#FF2E7E', shadowOpacity: 0.28, shadowRadius: 12, shadowOffset: { width: 0, height: 5 }, elevation: 6 },
+  gold: { shadowColor: '#FF9500', shadowOpacity: 0.28, shadowRadius: 10, shadowOffset: { width: 0, height: 4 }, elevation: 5 },
+  card: { shadowColor: '#1A1538', shadowOpacity: 0.08, shadowRadius: 10, shadowOffset: { width: 0, height: 4 }, elevation: 3 },
+};
+export const motion = { fast: 140, base: 240, slow: 380, stagger: 50 };
+
+export const meColors = {
+  bg: '#F6F8FC',
+  bgGradient: ['#FFFFFF', '#F6F8FC', '#EFF3FA'] as const,
+  card: '#FFFFFF', border: '#E8EAF2',
+  textPrimary: '#14121E', textSecondary: '#5E5A73', textMuted: '#9692A8',
+  completionBg: '#FFE8F1', completionText: '#FF2E7E',
+  coinsGradient: ['#FFF1B8', '#FFCE6B'] as const,
   earningsGradient: ['#FFD9E6', '#FFB6D0'] as const,
-
-  vipGradient: ['#FFE3A3', '#F7C567'] as const,
-  vipText: '#8A5A00',
-
-  noticeGradient: ['#7C6CF0', '#5B3DEB'] as const,
-
-  chipRed: '#FF6B6B',
-  chipOrange: '#FFA53D',
-  chipTeal: '#2AD2B0',
-  chipPink: '#FF4D8D',
-  chipGreen: '#31C48D',
-  chipPurple: '#8B5CF6',
-  chipBlue: '#4D8DFF',
-  chipYellow: '#F5B93D',
-
+  vipGradient: ['#FFE3A3', '#F7C567'] as const, vipText: '#8A5A00',
+  noticeGradient: ['#7B42F6', '#5B3DF5'] as const,
+  chipRed: '#FF6B6B', chipOrange: '#FFA53D', chipTeal: '#2AD2B0', chipPink: '#FF4D8D',
+  chipGreen: '#31C48D', chipPurple: '#8B5CF6', chipBlue: '#4D8DFF', chipYellow: '#F5B93D',
   danger: '#FF4D67',
 };
-
-export type MeGridColor =
-  | 'chipRed'
-  | 'chipOrange'
-  | 'chipTeal'
-  | 'chipPink'
-  | 'chipGreen'
-  | 'chipPurple'
-  | 'chipBlue'
-  | 'chipYellow';
+export type MeGridColor = 'chipRed'|'chipOrange'|'chipTeal'|'chipPink'|'chipGreen'|'chipPurple'|'chipBlue'|'chipYellow';

@@ -1,154 +1,112 @@
 import React from 'react';
-import {
-  Gift,
-  Trophy,
-  Gamepad2,
-  ShoppingBag,
-  Mail,
-  Shield,
-  Radio,
-  Building2,
-} from 'lucide-react';
-import { useProfile } from '../../context/ProfileContext';
+import { StyleSheet, View, Text, Pressable } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
+import { colors } from '../../theme';
+import { useTheme } from '../../context/ThemeContext';
 
 interface FeatureGridProps {
-  onOpenDailyReward: () => void;
-  onOpenGames: () => void;
+  onOpenReward: () => void;
+  onOpenRank: () => void;
   onOpenStore: () => void;
   onOpenInvite: () => void;
-  onOpenRank: () => void;
-  onOpenCreatorCenter: () => void;
-  onOpenAgency: () => void;
-  onOpenGuardian: () => void;
+  onOpenGames: () => void;
+  onOpenVideos: () => void;
 }
 
+// Only entries that lead somewhere real. Guardian, Privileges and Fan Club
+// used to be here, each opening a "not implemented" alert, and several tiles
+// carried invented badges ("Ready", "Hot").
 export const FeatureGrid: React.FC<FeatureGridProps> = ({
-  onOpenDailyReward,
-  onOpenGames,
+  onOpenReward,
+  onOpenRank,
   onOpenStore,
   onOpenInvite,
-  onOpenRank,
-  onOpenCreatorCenter,
-  onOpenAgency,
-  onOpenGuardian,
+  onOpenGames,
+  onOpenVideos,
 }) => {
-  const { dailyRewards, user, t } = useProfile();
-  
-  // Check if today's reward is available to claim
-  const hasClaimableReward = dailyRewards.some((d) => d.isCurrent && !d.isClaimed);
-
-  const features = [
-    {
-      key: 'reward',
-      label: t.reward,
-      sublabel: `${user.checkInStreak}d ${t.dayStreak}`,
-      icon: Gift,
-      color: 'bg-rose-500 text-white',
-      badge: hasClaimableReward ? 'Claim' : undefined,
-      onClick: onOpenDailyReward,
-    },
-    {
-      key: 'rank',
-      label: t.rank,
-      sublabel: t.leaderboard,
-      icon: Trophy,
-      color: 'bg-amber-500 text-white',
-      onClick: onOpenRank,
-    },
-    {
-      key: 'games',
-      label: t.games,
-      sublabel: t.gamesSub,
-      icon: Gamepad2,
-      color: 'bg-indigo-600 text-white',
-      badge: 'Hot',
-      onClick: onOpenGames,
-    },
-    {
-      key: 'store',
-      label: t.store,
-      sublabel: t.mountsAndFrames,
-      icon: ShoppingBag,
-      color: 'bg-teal-500 text-white',
-      onClick: onOpenStore,
-    },
-    {
-      key: 'invite',
-      label: t.invite,
-      sublabel: t.earnCoins,
-      icon: Mail,
-      color: 'bg-pink-500 text-white',
-      badge: 'Rebate',
-      onClick: onOpenInvite,
-    },
-    {
-      key: 'guardian',
-      label: t.guardian,
-      sublabel: t.fanClub,
-      icon: Shield,
-      color: 'bg-emerald-500 text-white',
-      onClick: onOpenGuardian,
-    },
-    {
-      key: 'creator',
-      label: t.streamer,
-      sublabel: t.targetAndPay,
-      icon: Radio,
-      color: 'bg-purple-600 text-white',
-      badge: user.isKycVerified ? undefined : 'Verify',
-      onClick: onOpenCreatorCenter,
-    },
-    {
-      key: 'agency',
-      label: t.agency,
-      sublabel: user.agency?.name ?? t.joinAgency,
-      icon: Building2,
-      color: 'bg-blue-600 text-white',
-      onClick: onOpenAgency,
-    },
+  const { palette } = useTheme();
+  const styles = makeStyles(palette);
+  const items: { label: string; icon: string; color: string; onPress: () => void }[] = [
+    { label: 'Reward', icon: 'gift-outline', color: palette.chipRed, onPress: onOpenReward },
+    { label: 'Rank', icon: 'trophy-outline', color: palette.chipOrange, onPress: onOpenRank },
+    { label: 'Buy coins', icon: 'bag-handle-outline', color: palette.chipTeal, onPress: onOpenStore },
+    { label: 'Invite', icon: 'mail-unread-outline', color: palette.chipRed, onPress: onOpenInvite },
+    { label: 'Games', icon: 'game-controller-outline', color: palette.chipBlue, onPress: onOpenGames },
+    { label: 'Videos', icon: 'play-circle-outline', color: palette.chipPurple, onPress: onOpenVideos },
   ];
 
   return (
-    <div
-      id="profile-feature-grid"
-      className="bg-white/90 dark:bg-slate-900/90 rounded-2xl p-4 border border-slate-100 dark:border-slate-800/80 shadow-xs"
-    >
-      <div className="grid grid-cols-4 gap-y-4 gap-x-2">
-        {features.map((item) => {
-          const Icon = item.icon;
-          return (
-            <button
-              key={item.key}
-              id={`feature-btn-${item.key}`}
-              onClick={item.onClick}
-              type="button"
-              className="group flex flex-col items-center justify-center p-1.5 rounded-xl hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-all cursor-pointer relative text-center"
-            >
-              {/* Badge indicator */}
-              {item.badge && (
-                <span className="absolute top-0 right-1 px-1.5 py-0.2 rounded-full text-[9px] font-black bg-rose-500 text-white shadow-xs animate-bounce">
-                  {item.badge}
-                </span>
-              )}
-
-              {/* Icon Container with subtle scale on hover */}
-              <div
-                className={`w-12 h-12 rounded-2xl ${item.color} flex items-center justify-center shadow-sm group-hover:scale-105 group-active:scale-95 transition-transform`}
-              >
-                <Icon className="w-6 h-6 stroke-[2.2]" />
-              </div>
-
-              {/* Label */}
-              <span className="text-xs font-bold text-slate-800 dark:text-slate-200 mt-2 group-hover:text-purple-600 dark:group-hover:text-purple-400 transition-colors">
-                {item.label}
-              </span>
-              <span className="text-[10px] text-slate-400 dark:text-slate-500 font-medium truncate max-w-[70px]">
-                {item.sublabel}
-              </span>
-            </button>
-          );
-        })}
-      </div>
-    </div>
+    <View style={styles.card}>
+      <View style={styles.grid}>
+        {items.map((item, index) => (
+          <Pressable key={index} onPress={item.onPress} style={styles.item}>
+            <View style={styles.iconContainer}>
+              <View style={[styles.iconCircle, { backgroundColor: item.color }]}>
+                <Ionicons name={item.icon as any} size={22} color="#FFFFFF" />
+              </View>
+            </View>
+            <Text style={styles.label} numberOfLines={1}>
+              {item.label}
+            </Text>
+          </Pressable>
+        ))}
+      </View>
+    </View>
   );
 };
+
+const makeStyles = (palette: typeof colors) => StyleSheet.create({
+  card: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 24,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: '#EFEDF6',
+  },
+  grid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    rowGap: 14,
+  },
+  item: {
+    width: '25%',
+    alignItems: 'center',
+  },
+  iconContainer: {
+    position: 'relative',
+  },
+  iconCircle: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#000',
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  badge: {
+    position: 'absolute',
+    top: -3,
+    right: -6,
+    backgroundColor: '#E11D48',
+    paddingHorizontal: 5,
+    paddingVertical: 2,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: '#FFFFFF',
+  },
+  badgeText: {
+    color: '#FFFFFF',
+    fontSize: 8,
+    fontWeight: '900',
+  },
+  label: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#221F33',
+    marginTop: 6,
+    textAlign: 'center',
+  },
+});

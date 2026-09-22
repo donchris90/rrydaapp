@@ -6,6 +6,7 @@ import { AuthStack } from './AuthStack';
 import { AppStack } from './AppStack';
 import { GradientBackground } from '../components/GradientBackground';
 import { colors } from '../theme';
+import { useTheme } from '../context/ThemeContext';
 
 // A dark navigation theme so the brief flash between screens (and the
 // area behind any translucent header) is this app's purple-black, not
@@ -25,6 +26,7 @@ const AppNavigationTheme: Theme = {
 
 export function RootNavigator() {
   const { isAuthenticated, isLoading } = useAuth();
+  const { palette } = useTheme();
 
   // Only shown during the one-time silent-re-login check on app start
   // (see AuthContext) — never shown again after that resolves either way.
@@ -36,8 +38,13 @@ export function RootNavigator() {
     );
   }
 
+  const navigationTheme: Theme = {
+    ...DarkTheme,
+    colors: { ...DarkTheme.colors, background: palette.background, card: palette.surface, primary: palette.primary, text: palette.textPrimary, border: palette.border },
+  };
+
   return (
-    <NavigationContainer theme={AppNavigationTheme}>
+    <NavigationContainer theme={navigationTheme}>
       {isAuthenticated ? <AppStack /> : <AuthStack />}
     </NavigationContainer>
   );

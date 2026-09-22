@@ -28,6 +28,17 @@ const VBG_SOURCE_COLOR = 2;
 const VBG_SOURCE_IMAGE = 3;
 const BLUR_DEGREE_SMALL = 1;
 const BLUR_DEGREE_LARGE = 2;
+// The SDK's enableVirtualBackground takes a segmentation property as a
+// REQUIRED third argument. It was being called with two, so the native side
+// received `undefined` where it expects a struct. 1 = SegModelAi, the SDK's
+// default all-scenario model; 0.5 is its documented default green capacity.
+const VBG_SEGMENTATION = { modelType: 1, greenCapacity: 0.5 };
+// The SDK's VirtualBackgroundSource uses snake_case field names and takes the
+// colour as a NUMBER (0xRRGGBB), not a CSS string. The code below used
+// camelCase names and a '#RRGGBB' string, which the native side silently
+// ignores — so the virtual background was never actually applied.
+const cssColorToInt = (hex: string): number => parseInt(hex.replace('#', ''), 16) || 0x1e1e2e;
+
 
 export type RoomRole = 'host' | 'audience';
 
@@ -41,6 +52,11 @@ interface UsePartyRoomEngineParams {
   // existing call site (which didn't have this concept) keeps its
   // current behavior unchanged.
   publishVideo?: boolean;
+  // Set while a host/moderator has muted this guest. Forces the local mic
+  // off (including on a freshly created engine after a rejoin) and makes
+  // toggleMic a no-op until cleared. Unmuting deliberately does NOT reopen
+  // the mic — the guest taps to speak when they're ready.
+  forcedMuted?: boolean;
 }
 
 interface UsePartyRoomEngineResult {
@@ -84,6 +100,7 @@ export function usePartyRoomEngine({
   userAccount,
   role,
   publishVideo = true,
+  forcedMuted = false,
 }: UsePartyRoomEngineParams): UsePartyRoomEngineResult {
   const engineRef = useRef<IRtcEngine | null>(null);
   const [isJoined, setIsJoined] = useState(false);
@@ -193,7 +210,7 @@ export function usePartyRoomEngine({
       if (engine) {
         try {
           if (shouldApplyVisualEffects) {
-            engine.enableVirtualBackground(false, { backgroundSourceType: VBG_SOURCE_BLUR, blurDegree: BLUR_DEGREE_LARGE });
+            engine.enableVirtualBackground(false, { background_source_type: VBG_SOURCE_BLUR, blur_degree: BLUR_DEGREE_LARGE }, VBG_SEGMENTATION);
             engine.setBeautyEffectOptions(false, { lighteningContrastLevel: 1, lighteningLevel: 0, smoothnessLevel: 0, rednessLevel: 0 });
           }
           engine.leaveChannel();
@@ -256,26 +273,33 @@ export function usePartyRoomEngine({
     if (!engine || !shouldApplyVisualEffects) return;
 
     if (background.mode === 'none') {
-      engine.enableVirtualBackground(false, { backgroundSourceType: VBG_SOURCE_BLUR, blurDegree: BLUR_DEGREE_LARGE });
+      engine.enableVirtualBackground(false, { background_source_type: VBG_SOURCE_BLUR, blur_degree: BLUR_DEGREE_LARGE }, VBG_SEGMENTATION);
       return;
     }
 
     let source: any;
     switch (background.mode) {
       case 'blur':
-        source = { backgroundSourceType: VBG_SOURCE_BLUR, blurDegree: background.blurDegree === 'small' ? BLUR_DEGREE_SMALL : BLUR_DEGREE_LARGE };
+        source = { background_source_type: VBG_SOURCE_BLUR, blur_degree: background.blurDegree === 'small' ? BLUR_DEGREE_SMALL : BLUR_DEGREE_LARGE };
         break;
       case 'color':
-        source = { backgroundSourceType: VBG_SOURCE_COLOR, color: background.color ?? '#1E1E2E' };
+        source = { background_source_type: VBG_SOURCE_COLOR, color: cssColorToInt(background.color ?? '#1E1E2E') };
         break;
       case 'image':
-        source = { backgroundSourceType: VBG_SOURCE_IMAGE, source: background.imagePath ?? '' };
+        source = { background_source_type: VBG_SOURCE_IMAGE, source: background.imagePath ?? '' };
         break;
     }
-    engine.enableVirtualBackground(true, source);
+    engine.enableVirtualBackground(true, source, VBG_SEGMENTATION);
   }, [background, shouldApplyVisualEffects]);
 
+  useEffect(() => {
+    if (!forcedMuted) return;
+    setIsMicMuted(true);
+    engineRef.current?.muteLocalAudioStream(true);
+  }, [forcedMuted, isJoined]);
+
   const toggleMic = () => {
+    if (forcedMuted) return;
     setIsMicMuted((current) => {
       const next = !current;
       engineRef.current?.muteLocalAudioStream(next);

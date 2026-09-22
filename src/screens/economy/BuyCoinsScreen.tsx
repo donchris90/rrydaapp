@@ -1,11 +1,11 @@
-import React, { useState } from 'react';
-import { ActivityIndicator, Alert, Pressable, StyleSheet, Text, View } from 'react-native';
+import React, { useEffect, useRef, useState } from 'react';
+import { ActivityIndicator, Alert, AppState, Linking, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import * as Crypto from 'expo-crypto';
-import { fetchCoinPackages, purchaseCoins } from '../../api/coins';
+import { fetchCoinPackages, fetchPaymentMethods, fetchPurchaseStatus, purchaseCoins } from '../../api/coins';
 import { useAuth } from '../../auth/AuthContext';
 import { GradientBackground } from '../../components/GradientBackground';
 import { GradientButton } from '../../components/GradientButton';
@@ -13,14 +13,10 @@ import { FadeInUp } from '../../components/FadeInUp';
 import { PressableScale } from '../../components/PressableScale';
 import { colors, radii, spacing, type } from '../../theme';
 
-// Was flagged as an open gap since early in this project — the coin
-// purchase backend (real Paystack integration, real package catalog)
-// existed with no way to reach it from the app at all. This is that
-// screen: real packages, real purchase initiation. What happens after
-// initiate() depends on the configured PaymentProvider — in a real
-// production setup this would open a payment page and confirm via
-// webhook; there's no in-app payment UI here, since building that is a
-// distinct, larger task from just exposing the existing endpoints.
+// Buying coins: pick a package, pay on the provider's hosted page (Paystack:
+// card, bank transfer or USSD), and the coins arrive when Paystack's signed
+// webhook confirms the payment. The app never decides a payment succeeded; it
+// only opens the payment page and then watches the purchase's status.
 export function BuyCoinsScreen() {
   const navigation = useNavigation();
   const insets = useSafeAreaInsets();
@@ -34,20 +30,66 @@ export function BuyCoinsScreen() {
     enabled: !!user?.countryCode,
   });
 
+  const methodsQuery = useQuery({ queryKey: ['coins', 'payment-methods'], queryFn: fetchPaymentMethods });
+  // (Read AFTER the query above is declared: reading it first crashed this screen on open.)
+  const paystack = (methodsQuery.data ?? []).find((m) => m.id === 'PAYSTACK');
+
+  // A purchase we sent the person off to pay for, and are now waiting on.
+  const [waitingFor, setWaitingFor] = useState<string | null>(null);
+  const pollUntil = useRef(0);
+
+  useEffect(() => {
+    if (!waitingFor) return;
+    pollUntil.current = Date.now() + 3 * 60 * 1000;
+    let cancelled = false;
+    const check = async () => {
+      try {
+        const p = await fetchPurchaseStatus(waitingFor);
+        if (cancelled) return;
+        if (p.status === 'CONFIRMED') {
+          setWaitingFor(null);
+          queryClient.invalidateQueries({ queryKey: ['wallet'] });
+          Alert.alert('Payment received', `${p.coinAmount.toLocaleString()} coins were added to your balance.`);
+        } else if (p.status === 'FAILED') {
+          setWaitingFor(null);
+          Alert.alert('Payment failed', 'The payment did not go through, and you were not charged for coins. Please try again.');
+        } else if (Date.now() > pollUntil.current) {
+          setWaitingFor(null);
+          Alert.alert('Still waiting', 'We have not received confirmation yet. If you paid, your coins will be added automatically as soon as the payment clears.');
+        }
+      } catch {
+        /* a failed poll is retried on the next tick */
+      }
+    };
+    const interval = setInterval(check, 3000);
+    const sub = AppState.addEventListener('change', (s) => s === 'active' && check()); // back from the payment page
+    check();
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+      sub.remove();
+    };
+  }, [waitingFor, queryClient]);
+
   const purchaseMutation = useMutation({
     mutationFn: (packageId: string) => purchaseCoins(packageId, Crypto.randomUUID()),
-    onSuccess: (result) => {
-      queryClient.invalidateQueries({ queryKey: ['wallet'] });
-      Alert.alert(
-        'Purchase initiated',
-        `Status: ${result.status}. Depending on how your payment provider is configured, this may need a confirmation step before coins actually land in your wallet.`,
-      );
+    onSuccess: async (result) => {
+      if (!result.checkoutUrl) {
+        Alert.alert('Payments unavailable', "This server isn't connected to a payment provider yet, so this purchase can't be completed.");
+        return;
+      }
+      setWaitingFor(result.id);
+      try {
+        await Linking.openURL(result.checkoutUrl);
+      } catch {
+        setWaitingFor(null);
+        Alert.alert("Couldn't open the payment page", 'Please try again.');
+      }
     },
     onError: (error: any) => {
       Alert.alert('Purchase failed', error?.response?.data?.message ?? 'Something went wrong. Try again.');
     },
   });
-
   return (
     <GradientBackground style={{ paddingTop: insets.top }}>
       <View style={styles.header}>
@@ -56,6 +98,23 @@ export function BuyCoinsScreen() {
         </Pressable>
         <Text style={styles.title}>Buy Coins</Text>
       </View>
+
+      {/* Payment rails are country-configured by Admin. Non-Paystack rails remain visibly unavailable until their transaction workflows are connected. */}
+      <View style={styles.methods}>
+        {(methodsQuery.data ?? []).map((m) => (
+          <View key={m.id} style={[styles.method, m.available && styles.methodActive, !m.available && { opacity: 0.55 }]}>
+            <Text style={styles.methodName}>{m.name}</Text>
+            <Text style={styles.methodNote}>{m.comingSoon ? 'Coming soon' : m.available ? m.description : 'Unavailable'}</Text>
+          </View>
+        ))}
+      </View>
+
+      {waitingFor && (
+        <View style={styles.waiting}>
+          <ActivityIndicator color={colors.primary} />
+          <Text style={styles.waitingText}>Waiting for your payment to be confirmed…</Text>
+        </View>
+      )}
 
       {packagesQuery.isLoading ? (
         <ActivityIndicator color={colors.primary} style={{ marginTop: spacing.xl }} />
@@ -92,8 +151,8 @@ export function BuyCoinsScreen() {
       {packagesQuery.data && packagesQuery.data.length > 0 && (
         <View style={[styles.footer, { paddingBottom: insets.bottom + spacing.md }]}>
           <GradientButton
-            label={purchaseMutation.isPending ? 'Processing...' : 'Buy now'}
-            onPress={() => selectedId && purchaseMutation.mutate(selectedId)}
+            label={purchaseMutation.isPending ? 'Opening payment page...' : waitingFor ? 'Waiting for payment…' : paystack?.available ? 'Pay with Paystack' : 'Payment unavailable'}
+            onPress={() => selectedId && !waitingFor && paystack?.available && purchaseMutation.mutate(selectedId)}
             loading={purchaseMutation.isPending}
           />
         </View>
@@ -112,6 +171,13 @@ const styles = StyleSheet.create({
   },
   backButton: { padding: spacing.xs },
   title: { ...type.h2, color: colors.textPrimary },
+  methods: { flexDirection: 'row', gap: spacing.sm, paddingHorizontal: spacing.md, marginTop: spacing.sm },
+  method: { flex: 1, backgroundColor: colors.surface, borderRadius: radii.lg, borderWidth: 1, borderColor: colors.borderLight, padding: spacing.sm },
+  methodActive: { borderColor: colors.primary },
+  methodName: { ...type.bodyStrong, color: colors.textPrimary },
+  methodNote: { ...type.caption, color: colors.textSecondary, marginTop: 2 },
+  waiting: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, paddingHorizontal: spacing.md, marginTop: spacing.sm },
+  waitingText: { ...type.caption, color: colors.textSecondary },
   list: { paddingHorizontal: spacing.md, gap: spacing.sm, marginTop: spacing.sm },
   packageRow: {
     flexDirection: 'row',

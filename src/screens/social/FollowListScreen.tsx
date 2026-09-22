@@ -1,3 +1,4 @@
+import { useProfileSheet } from '../../context/ProfileSheetContext';
 import React from 'react';
 import {
   Alert,
@@ -21,6 +22,7 @@ import { Avatar } from '../../components/Avatar';
 import { colors, radii, spacing, type } from '../../theme';
 
 export function FollowListScreen() {
+  const profileSheet = useProfileSheet();
   const navigation = useNavigation<NativeStackNavigationProp<AppStackParamList>>();
   const route = useRoute<RouteProp<AppStackParamList, 'FollowList'>>();
   const insets = useSafeAreaInsets();
@@ -62,9 +64,7 @@ export function FollowListScreen() {
       );
       return;
     }
-    // Standard behavior — no profile screen exists yet in this app, so
-    // show an alert until one is added.
-    Alert.alert('Profile', `Open ${user.displayName ?? 'user'}'s profile (not built yet)`);
+    profileSheet.open(user.id);
   };
 
   return (
@@ -90,7 +90,7 @@ export function FollowListScreen() {
               onPress={() => handlePress(item)}
               disabled={challengeMutation.isPending}
             >
-              <Avatar uri={undefined} size={44} />
+              <Avatar name={item.displayName} size={44} />
               <View style={styles.rowText}>
                 <Text style={styles.rowName} numberOfLines={1}>
                   {item.displayName ?? 'Anonymous'}
@@ -103,7 +103,7 @@ export function FollowListScreen() {
                   <Text style={styles.pkTagText}>PK</Text>
                 </View>
               ) : (
-                <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
+                <Ionicons name="chatbubble-ellipses-outline" size={20} color={colors.primary} />
               )}
             </Pressable>
           )}

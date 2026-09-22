@@ -1,4 +1,5 @@
 import React from 'react';
+import { ThemeProvider, useTheme } from './src/context/ThemeContext';
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -16,15 +17,23 @@ const queryClient = new QueryClient({
   },
 });
 
+
+function ThemeStatusBar() {
+  const { isMidnight } = useTheme();
+  return <StatusBar style={isMidnight ? 'light' : 'dark'} />;
+}
+
 export default function App() {
   return (
+    <ThemeProvider>
     <SafeAreaProvider>
       <QueryClientProvider client={queryClient}>
         <AuthProvider>
           <RootNavigator />
-          <StatusBar style="light" />
+          <ThemeStatusBar />
         </AuthProvider>
       </QueryClientProvider>
     </SafeAreaProvider>
+    </ThemeProvider>
   );
 }

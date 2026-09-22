@@ -9,11 +9,10 @@ import { PressableScale } from './PressableScale';
 import { LiveBadge } from './LiveBadge';
 import { colors, radii, spacing } from '../theme';
 
-// Home's primary card. coverUrl exists on LiveNowSession but nothing in
-// this backend ever sets it yet (checked before wiring this in) — shown
-// when present, falling back to the same deterministic gradient
-// otherwise, so this is forward-compatible with a future cover-upload
-// feature rather than dead code. No viewer count — see
+// Home's primary card. The thumbnail is the host's chosen cover image, or
+// failing that their profile photo, or failing that a deterministic gradient
+// with their initial. (Before covers could be set, nothing ever filled
+// coverUrl, so every card was just a gradient.) No viewer count — see
 // LiveNowSession's comment for why that'd be fake.
 const CARD_GRADIENTS: readonly (readonly [string, string])[] = [
   [colors.primary, colors.pink],
@@ -44,6 +43,8 @@ function useElapsed(startedAt: string): string {
 export function LiveNowCard({ session, onPress }: { session: LiveNowSession; onPress?: () => void }) {
   const gradient = gradientForId(session.id);
   const elapsed = useElapsed(session.startedAt);
+  const thumbnail = session.coverUrl ?? session.hostAvatarUrl;
+  const initial = (session.hostDisplayName ?? '?').trim().charAt(0).toUpperCase() || '?';
 
   // Checked once per card, not polled — a feed screen can show dozens
   // of these at once, and refetching each one every few seconds would
@@ -63,8 +64,8 @@ export function LiveNowCard({ session, onPress }: { session: LiveNowSession; onP
       {activePk ? (
         <View style={styles.pkSplitRow}>
           <View style={styles.pkSplitHalf}>
-            {session.coverUrl ? (
-              <Image source={{ uri: session.coverUrl }} style={StyleSheet.absoluteFill} />
+            {thumbnail ? (
+              <Image source={{ uri: thumbnail }} style={StyleSheet.absoluteFill} />
             ) : (
               <LinearGradient colors={gradient} style={StyleSheet.absoluteFill} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} />
             )}
@@ -81,10 +82,15 @@ export function LiveNowCard({ session, onPress }: { session: LiveNowSession; onP
             <Text style={styles.vsBadgeText}>VS</Text>
           </View>
         </View>
-      ) : session.coverUrl ? (
-        <Image source={{ uri: session.coverUrl }} style={StyleSheet.absoluteFill} />
+      ) : thumbnail ? (
+        <Image source={{ uri: thumbnail }} style={StyleSheet.absoluteFill} />
       ) : (
-        <LinearGradient colors={gradient} style={StyleSheet.absoluteFill} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} />
+        <>
+          <LinearGradient colors={gradient} style={StyleSheet.absoluteFill} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} />
+          <View style={styles.initialWrap} pointerEvents="none">
+            <Text style={styles.initialText}>{initial}</Text>
+          </View>
+        </>
       )}
 
       <View style={styles.topRow}>
@@ -117,6 +123,8 @@ export function LiveNowCard({ session, onPress }: { session: LiveNowSession; onP
 }
 
 const styles = StyleSheet.create({
+  initialWrap: { ...StyleSheet.absoluteFill, alignItems: 'center', justifyContent: 'center' },
+  initialText: { fontSize: 64, fontWeight: '900', color: 'rgba(255,255,255,0.35)' },
   card: {
     flex: 1,
     aspectRatio: 0.78,
@@ -125,7 +133,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.borderLight,
   },
-  pkSplitRow: { ...StyleSheet.absoluteFillObject, flexDirection: 'row' },
+  pkSplitRow: { ...StyleSheet.absoluteFill, flexDirection: 'row' },
   pkSplitHalf: { flex: 1, overflow: 'hidden' },
   vsBadge: {
     position: 'absolute',

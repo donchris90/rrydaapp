@@ -7,6 +7,7 @@ import {
   AudioAinsMode,
   FaceShapeArea,
   type IRtcEngine,
+  type IRtcEngineEx,
   type IRtcEngineEventHandler,
   type RtcConnection,
 } from 'react-native-agora';
@@ -78,6 +79,17 @@ const VBG_SOURCE_COLOR = 2;
 const VBG_SOURCE_IMAGE = 3;
 const BLUR_DEGREE_SMALL = 1;
 const BLUR_DEGREE_LARGE = 2;
+// The SDK's enableVirtualBackground takes a segmentation property as a
+// REQUIRED third argument. It was being called with two, so the native side
+// received `undefined` where it expects a struct. 1 = SegModelAi, the SDK's
+// default all-scenario model; 0.5 is its documented default green capacity.
+const VBG_SEGMENTATION = { modelType: 1, greenCapacity: 0.5 };
+// The SDK's VirtualBackgroundSource uses snake_case field names and takes the
+// colour as a NUMBER (0xRRGGBB), not a CSS string. The code below used
+// camelCase names and a '#RRGGBB' string, which the native side silently
+// ignores — so the virtual background was never actually applied.
+const cssColorToInt = (hex: string): number => parseInt(hex.replace('#', ''), 16) || 0x1e1e2e;
+
 
 interface UseAgoraEngineParams {
   channelId: string;
@@ -88,6 +100,9 @@ interface UseAgoraEngineParams {
 
 interface UseAgoraEngineResult {
   isJoined: boolean;
+  // True once the engine is created and laid out; screens key their video
+  // surface on it (see the comment where it is returned).
+  engineReady: boolean;
   remoteUid: number | null;
   error: string | null;
   isMicMuted: boolean;
@@ -115,6 +130,14 @@ interface UseAgoraEngineResult {
   secondaryConnection: RtcConnection | null;
   joinSecondaryChannel: (channelId: string, token: string) => void;
   leaveSecondaryChannel: () => void;
+  // A song from the host's phone playing into the live (host only).
+  music: { name: string; status: 'playing' | 'paused'; volume: number } | null;
+  musicError: string | null;
+  startMusic: (uri: string, name: string, loop?: boolean) => void;
+  pauseMusic: () => void;
+  resumeMusic: () => void;
+  stopMusic: () => void;
+  setMusicVolume: (volume: number) => void;
 }
 
 export function useAgoraEngine({
@@ -124,6 +147,11 @@ export function useAgoraEngine({
   role,
 }: UseAgoraEngineParams): UseAgoraEngineResult {
   const engineRef = useRef<IRtcEngine | null>(null);
+
+  // A song from the host's phone, played INTO the live: everyone hears it mixed in
+  // with the host's voice (the host's own phone plays it too).
+  const [music, setMusic] = useState<{ name: string; status: 'playing' | 'paused'; volume: number } | null>(null);
+  const [musicError, setMusicError] = useState<string | null>(null);
   const [isJoined, setIsJoined] = useState(false);
   const [remoteUid, setRemoteUid] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -201,6 +229,16 @@ export function useAgoraEngine({
             }
           },
           onError: (err, msg) => setError(`Agora error ${err}: ${msg}`),
+          // Music playing state: 710 playing, 711 paused, 713 finished, 714 failed.
+          onAudioMixingStateChanged: (state) => {
+            if (state === 710) setMusic((m) => (m ? { ...m, status: 'playing' } : m));
+            else if (state === 711) setMusic((m) => (m ? { ...m, status: 'paused' } : m));
+            else if (state === 713) setMusic(null);
+            else if (state === 714) {
+              setMusic(null);
+              setMusicError('That file could not be played. Try an MP3 or M4A.');
+            }
+          },
           // These callbacks are deliberately diagnostic: a blank local
           // surface is usually caused by capture/permission failure, not
           // by the RtcSurfaceView itself.
@@ -267,10 +305,7 @@ export function useAgoraEngine({
 
       try {
         if (shouldApplyVisualEffects) {
-          engine.enableVirtualBackground(false, {
-            backgroundSourceType: VBG_SOURCE_BLUR,
-            blurDegree: BLUR_DEGREE_LARGE,
-          });
+          engine.enableVirtualBackground(false, { background_source_type: VBG_SOURCE_BLUR, blur_degree: BLUR_DEGREE_LARGE }, VBG_SEGMENTATION);
           engine.setBeautyEffectOptions(false, {
             lighteningContrastLevel: 1,
             lighteningLevel: 0,
@@ -380,10 +415,7 @@ export function useAgoraEngine({
     if (!engine || !shouldApplyVisualEffects) return;
 
     if (background.mode === 'none') {
-      engine.enableVirtualBackground(false, {
-        backgroundSourceType: VBG_SOURCE_BLUR,
-        blurDegree: BLUR_DEGREE_LARGE,
-      });
+      engine.enableVirtualBackground(false, { background_source_type: VBG_SOURCE_BLUR, blur_degree: BLUR_DEGREE_LARGE }, VBG_SEGMENTATION);
       return;
     }
 
@@ -391,8 +423,8 @@ export function useAgoraEngine({
     switch (background.mode) {
       case 'blur':
         source = {
-          backgroundSourceType: VBG_SOURCE_BLUR,
-          blurDegree:
+          background_source_type: VBG_SOURCE_BLUR,
+          blur_degree:
             background.blurDegree === 'small'
               ? BLUR_DEGREE_SMALL
               : BLUR_DEGREE_LARGE,
@@ -400,19 +432,19 @@ export function useAgoraEngine({
         break;
       case 'color':
         source = {
-          backgroundSourceType: VBG_SOURCE_COLOR,
-          color: background.color ?? '#1E1E2E',
+          background_source_type: VBG_SOURCE_COLOR,
+          color: cssColorToInt(background.color ?? '#1E1E2E'),
         };
         break;
       case 'image':
         source = {
-          backgroundSourceType: VBG_SOURCE_IMAGE,
+          background_source_type: VBG_SOURCE_IMAGE,
           source: background.imagePath ?? '',
         };
         break;
     }
 
-    engine.enableVirtualBackground(true, source);
+    engine.enableVirtualBackground(true, source, VBG_SEGMENTATION);
   }, [background, shouldApplyVisualEffects]);
 
   const setBeauty = (next: Partial<BeautyState>) => {
@@ -451,7 +483,7 @@ export function useAgoraEngine({
     const connection: RtcConnection = { channelId: secondaryChannelId, localUid: 0 };
     secondaryChannelIdRef.current = secondaryChannelId;
     setSecondaryConnection(connection);
-    engine.joinChannelEx(secondaryToken, connection, {
+    (engine as IRtcEngineEx).joinChannelEx(secondaryToken, connection, {
       clientRoleType: ClientRoleType.ClientRoleAudience,
       autoSubscribeAudio: true,
       autoSubscribeVideo: true,
@@ -465,7 +497,7 @@ export function useAgoraEngine({
     const connection = secondaryConnection;
     if (!engine || !connection) return;
     try {
-      engine.leaveChannelEx(connection);
+      (engine as IRtcEngineEx).leaveChannelEx(connection);
     } catch {}
     secondaryChannelIdRef.current = null;
     setSecondaryConnection(null);
@@ -478,6 +510,37 @@ export function useAgoraEngine({
       engineRef.current?.setAINSMode(next, AudioAinsMode.AinsModeBalanced);
       return next;
     });
+  };
+
+  const startMusic = (uri: string, name: string, loop = false) => {
+    const engine = engineRef.current;
+    if (!engine) return;
+    setMusicError(null);
+    // The SDK wants a plain file path, not a file:// address.
+    const path = uri.replace(/^file:\/\//, '');
+    const result = engine.startAudioMixing(path, false, loop ? -1 : 1);
+    if (result !== 0) {
+      setMusicError('That file could not be played. Try an MP3 or M4A.');
+      return;
+    }
+    engine.adjustAudioMixingVolume(60);
+    setMusic({ name, status: 'playing', volume: 60 });
+  };
+  const pauseMusic = () => {
+    engineRef.current?.pauseAudioMixing();
+    setMusic((m) => (m ? { ...m, status: 'paused' } : m));
+  };
+  const resumeMusic = () => {
+    engineRef.current?.resumeAudioMixing();
+    setMusic((m) => (m ? { ...m, status: 'playing' } : m));
+  };
+  const stopMusic = () => {
+    engineRef.current?.stopAudioMixing();
+    setMusic(null);
+  };
+  const setMusicVolume = (volume: number) => {
+    engineRef.current?.adjustAudioMixingVolume(Math.round(volume));
+    setMusic((m) => (m ? { ...m, volume: Math.round(volume) } : m));
   };
 
   return {
@@ -511,5 +574,12 @@ export function useAgoraEngine({
     secondaryConnection,
     joinSecondaryChannel,
     leaveSecondaryChannel,
+    music,
+    musicError,
+    startMusic,
+    pauseMusic,
+    resumeMusic,
+    stopMusic,
+    setMusicVolume,
   };
 }

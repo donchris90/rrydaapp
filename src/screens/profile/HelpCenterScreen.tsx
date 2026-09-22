@@ -10,7 +10,7 @@ import { colors, radii, spacing, type } from '../../theme';
 const FAQ_ITEMS: { question: string; answer: string }[] = [
   {
     question: 'How do I buy coins?',
-    answer: 'Go to Profile → Store, pick a package, and confirm the purchase. Coins are used for gifts and game entries.',
+    answer: 'Go to Profile → Buy coins, pick a package, and confirm the purchase. Coins are used for gifts and game entries.',
   },
   {
     question: 'How do gifts work?',

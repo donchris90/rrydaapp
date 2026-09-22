@@ -3,6 +3,7 @@ import { View, Text, TextInput, Pressable, FlatList, StyleSheet, KeyboardAvoidin
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../auth/AuthContext';
 import type { ChatMessage } from '../live/useLiveChat';
+import { EmojiPicker } from './EmojiPicker';
 import { colors, spacing, radii, type } from '../theme';
 
 // Redesigned to match Facebook/Instagram Live's actual chat style: each
@@ -38,12 +39,19 @@ export const LiveChatFeed = forwardRef<
     // empty text for every message). Falls back to the default pill
     // rendering when not provided.
     renderLine?: (message: ChatMessage, isMe: boolean) => React.ReactNode;
+    // Let the feed take all the height its parent gives it, instead of the
+    // default compact overlay capped at 150px. RoomScreen's chat column has a
+    // bounded height, so this is safe there.
+    fill?: boolean;
+    // Show only the messages; the screen supplies its own input (see LiveBottomBar).
+    hideInput?: boolean;
   }
->(function LiveChatFeed({ messages, sendMessage, renderLine }, ref) {
+>(function LiveChatFeed({ messages, sendMessage, renderLine, fill, hideInput }, ref) {
     const { user } = useAuth();
     const [draft, setDraft] = useState('');
     const listRef = useRef<FlatList<ChatMessage>>(null);
     const inputRef = useRef<TextInput>(null);
+    const [emojiOpen, setEmojiOpen] = useState(false);
 
     useImperativeHandle(ref, () => ({
       focus: () => inputRef.current?.focus(),
@@ -58,10 +66,19 @@ export const LiveChatFeed = forwardRef<
   const renderMessage = ({ item }: { item: ChatMessage }) => {
     const isMe = item.senderId === user?.id;
     if (renderLine) return <>{renderLine(item, isMe)}</>;
+    if (item.system) {
+      return (
+        <View style={styles.systemPill}>
+          <Text style={styles.systemText} numberOfLines={1}>
+            {item.content}
+          </Text>
+        </View>
+      );
+    }
     return (
       <View style={styles.messagePill}>
         <Text style={styles.messageText} numberOfLines={2}>
-          <Text style={[styles.senderName, isMe && styles.senderNameMe]}>{isMe ? 'You' : item.senderId.slice(0, 6)}</Text>
+          <Text style={[styles.senderName, isMe && styles.senderNameMe]}>{isMe ? 'You' : (item.senderName?.trim() || 'Guest')}</Text>
           {'  '}
           {item.content}
         </Text>
@@ -70,7 +87,7 @@ export const LiveChatFeed = forwardRef<
   };
 
   return (
-    <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.container}>
+    <KeyboardAvoidingView behavior="padding" style={fill ? styles.containerFill : styles.container}>
       <FlatList
         ref={listRef}
         data={messages}
@@ -78,9 +95,11 @@ export const LiveChatFeed = forwardRef<
         renderItem={renderMessage}
         onContentSizeChange={() => listRef.current?.scrollToEnd({ animated: true })}
         contentContainerStyle={styles.list}
-        style={styles.feed}
+        style={fill ? styles.feedFill : styles.feed}
         showsVerticalScrollIndicator={false}
       />
+      {!hideInput && emojiOpen && <EmojiPicker onPick={(e) => setDraft((d) => d + e)} height={170} />}
+      {!hideInput && (
       <View style={styles.inputRow}>
         <TextInput
           ref={inputRef}
@@ -91,14 +110,17 @@ export const LiveChatFeed = forwardRef<
           placeholderTextColor="rgba(255,255,255,0.6)"
           maxLength={500}
           onSubmitEditing={handleSend}
+          onFocus={() => setEmojiOpen(false)}
           returnKeyType="send"
         />
-        {draft.trim().length > 0 && (
-          <Pressable style={styles.sendButton} onPress={handleSend}>
-            <Ionicons name="send" size={16} color={colors.textPrimary} />
-          </Pressable>
-        )}
+        <Pressable onPress={() => setEmojiOpen((o) => !o)} hitSlop={6} accessibilityLabel="Emoji">
+          <Ionicons name={emojiOpen ? 'keypad' : 'happy-outline'} size={24} color="#FFF" />
+        </Pressable>
+        <Pressable style={[styles.sendButton, draft.trim().length === 0 && { opacity: 0.4 }]} onPress={handleSend} accessibilityLabel="Send message">
+          <Ionicons name="send" size={16} color={colors.textPrimary} />
+        </Pressable>
       </View>
+      )}
     </KeyboardAvoidingView>
   );
   },
@@ -106,7 +128,9 @@ export const LiveChatFeed = forwardRef<
 
 const styles = StyleSheet.create({
   container: { width: '100%' },
+  containerFill: { width: '100%', flex: 1 },
   feed: { maxHeight: 150 },
+  feedFill: { flex: 1 },
   list: { paddingHorizontal: spacing.md, paddingVertical: spacing.xs, justifyContent: 'flex-end' },
   messagePill: {
     alignSelf: 'flex-start',
@@ -120,6 +144,16 @@ const styles = StyleSheet.create({
   messageText: { color: colors.textPrimary, fontSize: 13, lineHeight: 17 },
   senderName: { fontWeight: '700', color: '#BFD4FF' },
   senderNameMe: { color: colors.gold },
+  systemPill: {
+    alignSelf: 'flex-start',
+    backgroundColor: 'rgba(0,0,0,0.24)',
+    borderRadius: radii.md,
+    paddingHorizontal: 10,
+    paddingVertical: 3,
+    marginBottom: 5,
+    maxWidth: '92%',
+  },
+  systemText: { color: 'rgba(255,255,255,0.85)', fontSize: 12.5, fontWeight: '600' },
   inputRow: {
     flexDirection: 'row',
     alignItems: 'center',
