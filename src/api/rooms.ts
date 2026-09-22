@@ -161,6 +161,17 @@ export async function updateRoomTheme(roomId: string, themeColor: string): Promi
   return response.data;
 }
 
+// Host-only: switch an open room between video and audio while live.
+export async function updateRoomMode(roomId: string, mode: PartyRoom['mode']): Promise<{ mode: PartyRoom['mode'] }> {
+  const response = await apiClient.patch<{ mode: PartyRoom['mode'] }>(`/rooms/${roomId}/mode`, { mode });
+  return response.data;
+}
+
+export async function updateRoomSeatCount(roomId: string, seatCount: number): Promise<{ seatCount: number }> {
+  const response = await apiClient.patch<{ seatCount: number }>(`/rooms/${roomId}/seat-count`, { seatCount });
+  return response.data;
+}
+
 export async function closeRoom(roomId: string): Promise<void> {
   await apiClient.post(`/rooms/${roomId}/close`);
 }

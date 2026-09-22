@@ -76,6 +76,8 @@ type Props = {
   // Extra real actions a screen can offer. A tile only appears when its handler
   // (or, for share, its message) is provided — there are no placeholder tiles.
   onOpenPk?: () => void;
+  roomMode?: 'VIDEO' | 'AUDIO';
+  onToggleRoomMode?: () => void;
   shareMessage?: string;
 };
 
@@ -150,6 +152,8 @@ export function LiveToolsSheet({
   faceShape,
   setFaceShape,
   onOpenPk,
+  roomMode,
+  onToggleRoomMode,
   shareMessage,
   initialPanel,
 }: Props) {
@@ -165,6 +169,17 @@ export function LiveToolsSheet({
   // Rewards, Store, VIP, Gift Center, Bag, Gift Gallery, Lucky Box, Gift
   // Collection, Gift Wish, ...) that were not wired to anything.
   const tools: ToolItem[] = [];
+  if (isHost && onToggleRoomMode && roomMode) {
+    const toVideo = roomMode === 'AUDIO';
+    tools.push({
+      key: 'roomMode',
+      label: toVideo ? 'Switch to Video' : 'Switch to Audio',
+      icon: toVideo ? 'videocam-outline' : 'mic-outline',
+      tint: '#FFF',
+      bg: 'rgba(255,255,255,0.10)',
+      onPress: onToggleRoomMode,
+    });
+  }
   if (switchCamera) {
     tools.push({ key: 'switchCamera', label: 'Switch Camera', icon: 'camera-reverse-outline', tint: '#FFF', bg: 'rgba(255,255,255,0.10)', onPress: switchCamera });
   }

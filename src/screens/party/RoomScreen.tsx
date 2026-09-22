@@ -34,6 +34,8 @@ import {
   removeGuest,
   banGuest,
   updateRoomTheme,
+  updateRoomMode,
+  updateRoomSeatCount,
   muteGuest,
   unmuteGuest,
   inviteToSeat,
@@ -74,50 +76,140 @@ import type { AppStackParamList } from '../../navigation/types';
 
 type RoomRouteProp = RouteProp<AppStackParamList, 'Room'>;
 
-function gridForSeatCount(
-  seatCount: number
-): { cols: number; rows: number } {
-  switch (seatCount) {
-    case 2:
-      return { cols: 2, rows: 1 };
+/* ------------------------------------------------------------------ */
+/*  SEAT LAYOUT MATH                                                   */
+/* ------------------------------------------------------------------ */
+/*
+ * Layout rule:
+ *  - AUDIO room  → all seats equal size (uniform grid)
+ *  - VIDEO room  → host gets a hero tile; guests fill the rest
+ *
+ * Presets (from the sketch):
+ *   4  → host hero (left, 58%) + 3 stacked guest tiles (right)
+ *   6  → host hero (left, 45%) + 2×2 guest grid (right)
+ *   9  → 3×3 uniform grid
+ *   12 → 4×3 uniform grid
+ */
 
-    case 4:
-      return { cols: 2, rows: 2 };
+const GAP = 0;
 
-    case 6:
-      return { cols: 3, rows: 2 };
+type SeatLayout = {
+  kind: 'hero' | 'uniform' | 'hero-3-bottom';   // ← add the new kind
+  hostWidth: number;
+  hostHeight: number;
+  guestCols: number;
+  guestRows: number;
+  guestTileWidth: number;
+  guestTileHeight: number;
 
-    case 8:
-      return { cols: 4, rows: 2 };
+  // New: sizing for the bottom-row tiles (only used by 'hero-3-bottom')
+  bottomTileWidth: number;
+  bottomTileHeight: number;
+};
 
-    case 9:
-      return { cols: 3, rows: 3 };
-
-    case 12:
-      return { cols: 4, rows: 3 };
-
-    default: {
-      const cols = Math.ceil(Math.sqrt(seatCount));
-
-      return {
-        cols,
-        rows: Math.ceil(seatCount / cols),
-      };
-    }
+function computeSeatLayout(
+  seatCount: number,
+  audio: boolean,
+  roomWidth: number,
+  stageHeight: number
+): SeatLayout {
+  // --- AUDIO: everything equal, uniform grid ---
+  if (audio) {
+    const cols = seatCount <= 4 ? 2 : seatCount <= 9 ? 3 : 4;
+    const rows = Math.ceil(seatCount / cols);
+    // exact fit — no leftover on right/bottom
+    const tileWidth = (roomWidth - GAP * (cols - 1)) / cols;
+    const tileHeight = (stageHeight - GAP * (rows - 1)) / rows;
+    return {
+      kind: 'uniform',
+      hostWidth: tileWidth,
+      hostHeight: tileHeight,
+      guestCols: cols,
+      guestRows: rows,
+      guestTileWidth: tileWidth,
+      guestTileHeight: tileHeight,
+      bottomTileWidth: 0,
+      bottomTileHeight: 0,
+    };
   }
+
+  // --- VIDEO: 4-seat preset ---
+  if (seatCount <= 4) {
+    const hostWidth = roomWidth * 0.58;
+    const guestCols = 1;
+    const guestRows = Math.max(1, seatCount - 1);
+    const guestAreaWidth = roomWidth - hostWidth - GAP;
+    const guestTileWidth = guestAreaWidth;
+    const guestTileHeight =
+      (stageHeight - GAP * (guestRows - 1)) / guestRows;
+    return {
+      kind: 'hero',
+      hostWidth,
+      hostHeight: stageHeight,
+      guestCols,
+      guestRows,
+      guestTileWidth,
+      guestTileHeight,
+      bottomTileWidth: 0,
+      bottomTileHeight: 0,
+    };
+  }
+
+  // --- VIDEO: 6-seat preset (big host top-left, 2 right, 3 bottom) ---
+  if (seatCount <= 6) {
+    const bottomRowHeight = (stageHeight - GAP) * 0.34;
+    const topBlockHeight = stageHeight - bottomRowHeight - GAP;
+
+    const hostWidth = roomWidth * 0.62;
+    const rightColWidth = roomWidth - hostWidth - GAP;
+    const rightTileHeight = (topBlockHeight - GAP) / 2;
+
+    const bottomTileWidth = (roomWidth - GAP * 2) / 3;
+    const bottomTileHeight = bottomRowHeight;
+
+    return {
+      kind: 'hero-3-bottom',
+      hostWidth,
+      hostHeight: topBlockHeight,
+      guestCols: 1,
+      guestRows: 2,
+      guestTileWidth: rightColWidth,
+      guestTileHeight: rightTileHeight,
+      bottomTileWidth,
+      bottomTileHeight,
+    };
+  }
+
+  // --- VIDEO: 9 / 12 → uniform grid ---
+  const cols = seatCount <= 9 ? 3 : 4;
+  const rows = Math.ceil(seatCount / cols);
+  const tileWidth = (roomWidth - GAP * (cols - 1)) / cols;
+  const tileHeight = (stageHeight - GAP * (rows - 1)) / rows;
+  return {
+    kind: 'uniform',
+    hostWidth: tileWidth,
+    hostHeight: tileHeight,
+    guestCols: cols,
+    guestRows: rows,
+    guestTileWidth: tileWidth,
+    guestTileHeight: tileHeight,
+    bottomTileWidth: 0,
+    bottomTileHeight: 0,
+  };
 }
+
+/* ------------------------------------------------------------------ */
+/*  SCREEN                                                             */
+/* ------------------------------------------------------------------ */
 
 export function RoomScreen() {
   const navigation = useNavigation<any>();
   const route = useRoute<RoomRouteProp>();
 
-  const {
-    roomId,
-    initialVideoEnabled,
-  } = route.params;
+  const { roomId, initialVideoEnabled } = route.params;
 
   const insets = useSafeAreaInsets();
-  const { width: screenWidth } = useWindowDimensions();
+  const { width: screenWidth, height: screenHeight } = useWindowDimensions();
 
   const { user } = useAuth();
   const queryClient = useQueryClient();
@@ -128,21 +220,15 @@ export function RoomScreen() {
     channel: string;
   } | null>(null);
 
-  // True while the host/a moderator has this user muted (seeded from the
-  // join response, then kept current by 'room:moderation' events).
   const [forcedMuted, setForcedMuted] = useState(false);
 
-  const [isManageSheetOpen, setIsManageSheetOpen] =
-    useState(false);
+  const [isManageSheetOpen, setIsManageSheetOpen] = useState(false);
+  const [manageTab, setManageTab] = useState<
+    'requests' | 'invite' | 'theme' | 'seats'
+  >('requests');
 
-  const [manageTab, setManageTab] =
-    useState<'requests' | 'invite' | 'theme'>('requests');
-
-  const [isToolsOpen, setIsToolsOpen] =
-    useState(false);
-
-  const [isBeautySheetOpen, setIsBeautySheetOpen] =
-    useState(false);
+  const [isToolsOpen, setIsToolsOpen] = useState(false);
+  const [isBeautySheetOpen, setIsBeautySheetOpen] = useState(false);
 
   const [likes, setLikes] = useState(0);
   const [isLikes, setIsLikes] = useState(false);
@@ -150,12 +236,7 @@ export function RoomScreen() {
   const [giftRecipient, setGiftRecipient] =
     useState<RoomSeatOccupant | null>(null);
 
-  /*
-   * SAFE BACK NAVIGATION
-   *
-   * Prevents:
-   * "The action 'GO_BACK' was not handled by any navigator."
-   */
+  /* SAFE BACK NAVIGATION */
   const goBackFromRoom = () => {
     if (navigation.canGoBack()) {
       navigation.goBack();
@@ -164,9 +245,7 @@ export function RoomScreen() {
     }
   };
 
-  /*
-   * JOIN ROOM
-   */
+  /* JOIN ROOM */
   const joinMutation = useMutation({
     mutationFn: () => joinRoom(roomId),
 
@@ -181,253 +260,160 @@ export function RoomScreen() {
     },
 
     onError: (error: any) => {
-      // The real reason: what the server said, or that it could not be reached.
-      Alert.alert('Could not join room', describeApiError(error, 'Something went wrong'));
-
+      Alert.alert(
+        'Could not join room',
+        describeApiError(error, 'Something went wrong')
+      );
       goBackFromRoom();
     },
   });
 
   useEffect(() => {
     joinMutation.mutate();
-
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [roomId]);
 
-  /*
-   * ROOM DATA
-   */
+  /* ROOM DATA */
   const roomQuery = useQuery({
     queryKey: ['rooms', roomId],
-
     queryFn: () => fetchRoomDetails(roomId),
-
     refetchInterval: 4000,
-
     enabled: !!joinState,
   });
 
   const room = roomQuery.data;
 
-  /*
-   * WALLET
-   */
+  /* WALLET */
   const walletQuery = useQuery({
     queryKey: ['wallet'],
     queryFn: fetchWallet,
   });
 
-  /*
-   * RANKING
-   */
+  /* RANKING */
   const rankingQuery = useQuery({
     queryKey: ['gifts', 'ranking', 'today'],
-
-    queryFn: () =>
-      fetchHonorRanking('today'),
+    queryFn: () => fetchHonorRanking('today'),
   });
 
-  const topGiftToday =
-    rankingQuery.data?.[0]?.honorScore ?? 0;
+  const topGiftToday = rankingQuery.data?.[0]?.honorScore ?? 0;
 
-  /*
-   * SEAT REQUESTS
-   */
+  /* SEAT REQUESTS */
   const seatRequestsQuery = useQuery({
-    queryKey: [
-      'rooms',
-      roomId,
-      'seat-requests',
-    ],
-
-    queryFn: () =>
-      fetchSeatRequests(roomId),
-
+    queryKey: ['rooms', roomId, 'seat-requests'],
+    queryFn: () => fetchSeatRequests(roomId),
     refetchInterval: 4000,
-
-    enabled: !!joinState && !!room && !!user?.id && (room.hostId === user.id || room.moderatorIds.includes(user.id)),
-  });
-
-  /*
-   * FOLLOWERS
-   */
-  const followersQuery = useQuery({
-    queryKey: [
-      'social',
-      'followers',
-    ],
-
-    queryFn: fetchFollowersList,
-
     enabled:
-      isManageSheetOpen &&
-      manageTab === 'invite',
+      !!joinState &&
+      !!room &&
+      !!user?.id &&
+      (room.hostId === user.id || room.moderatorIds.includes(user.id)),
   });
 
-  /*
-   * INVITE
-   */
+  /* FOLLOWERS */
+  const followersQuery = useQuery({
+    queryKey: ['social', 'followers'],
+    queryFn: fetchFollowersList,
+    enabled: isManageSheetOpen && manageTab === 'invite',
+  });
+
+  /* INVITE */
   const inviteMutation = useMutation({
-    mutationFn: (userId: string) =>
-      inviteToSeat(roomId, userId),
-
-    onSuccess: () => {
-      Alert.alert(
-        'Invited',
-        'They can accept from their Party tab.'
-      );
-    },
-
+    mutationFn: (userId: string) => inviteToSeat(roomId, userId),
+    onSuccess: () =>
+      Alert.alert('Invited', 'They can accept from their Party tab.'),
     onError: (error: any) =>
       Alert.alert(
         'Could not invite',
-        error?.response?.data?.message ??
-          'Something went wrong'
+        error?.response?.data?.message ?? 'Something went wrong'
       ),
   });
 
   const lockSeatMutation = useMutation({
-    mutationFn: ({ seatNumber, locked }: { seatNumber: number; locked: boolean }) =>
-      locked ? lockRoomSeat(roomId, seatNumber) : unlockRoomSeat(roomId, seatNumber),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['rooms', roomId] }),
-    onError: (error: any) => Alert.alert('Could not change seat lock', error?.response?.data?.message ?? 'Please try again.'),
+    mutationFn: ({
+      seatNumber,
+      locked,
+    }: {
+      seatNumber: number;
+      locked: boolean;
+    }) =>
+      locked
+        ? lockRoomSeat(roomId, seatNumber)
+        : unlockRoomSeat(roomId, seatNumber),
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: ['rooms', roomId] }),
+    onError: (error: any) =>
+      Alert.alert(
+        'Could not change seat lock',
+        error?.response?.data?.message ?? 'Please try again.'
+      ),
   });
 
-  /*
-   * PARTY ENGINE
-   */
-  // The room's persisted mode is authoritative. Falling back to the route
-  // flag while room data is loading is safe for the first render, but once
-  // the server responds an AUDIO room can never accidentally publish camera.
+  /* PARTY ENGINE */
   const publishVideo = room
     ? room.mode === 'VIDEO'
-    : (initialVideoEnabled ?? false);
+    : initialVideoEnabled ?? false;
 
   const {
     remoteUids,
     uidToUserAccount,
-
     isMicMuted,
     toggleMic,
     switchCamera,
-
     beauty,
     setBeauty,
-
     faceShape,
     setFaceShape,
-
     background,
     setBackground,
   } = usePartyRoomEngine({
-    channelId:
-      joinState?.channel ?? '',
-
-    token:
-      joinState?.token ?? '',
-
-    userAccount:
-      user?.id ?? '',
-
-    role:
-      joinState?.role ?? 'audience',
-
+    channelId: joinState?.channel ?? '',
+    token: joinState?.token ?? '',
+    userAccount: user?.id ?? '',
+    role: joinState?.role ?? 'audience',
     publishVideo,
-
     forcedMuted,
   });
 
-  /*
-   * UID MAP
-   */
-  const userAccountToUid =
-    new Map<string, number>();
+  /* UID MAP */
+  const userAccountToUid = new Map<string, number>();
+  uidToUserAccount.forEach((account, uid) => {
+    userAccountToUid.set(account, uid);
+  });
 
-  uidToUserAccount.forEach(
-    (account, uid) => {
-      userAccountToUid.set(
-        account,
-        uid
-      );
-    }
-  );
-
-  /*
-   * REJOIN
-   */
+  /* REJOIN */
   const rejoin = () => {
     setJoinState(null);
-
     joinMutation.mutate();
   };
 
-  /*
-   * THEME
-   */
-  const themeColor =
-    room?.themeColor ?? colors.primary;
-
+  /* THEME */
+  const themeColor = room?.themeColor ?? colors.primary;
   const isDefaultTheme =
     !room?.themeColor ||
-    room.themeColor.toLowerCase() ===
-      colors.primary.toLowerCase();
+    room.themeColor.toLowerCase() === colors.primary.toLowerCase();
 
-  /*
-   * CHAT
-   */
-  /*
-   * MODERATION EVENTS (room:moderation)
-   *
-   * Every event refreshes room details so seats / muted state update for
-   * everyone at once. Events aimed at *this* user are then enforced:
-   * MUTE / UNMUTE re-fetch a token (a muted seat-holder gets a
-   * subscribe-only one, so it holds at the RTC layer, not just in the UI),
-   * BAN leaves the room. KICK is picked up by the seat-removed effect.
-   */
+  /* CHAT + MODERATION */
   const handleModerationEvent = (event: RoomModerationEvent) => {
-    queryClient.invalidateQueries({
-      queryKey: ['rooms', roomId],
-    });
+    queryClient.invalidateQueries({ queryKey: ['rooms', roomId] });
 
     if (event.targetUserId !== user?.id) return;
 
     switch (event.action) {
       case 'MUTE':
         setForcedMuted(true);
-
-        Alert.alert(
-          'You were muted',
-          'The host muted you in this room.'
-        );
-
-        if (joinState?.role === 'host') {
-          rejoin();
-        }
-
+        Alert.alert('You were muted', 'The host muted you in this room.');
+        if (joinState?.role === 'host') rejoin();
         break;
 
       case 'UNMUTE':
         setForcedMuted(false);
-
-        Alert.alert(
-          'You were unmuted',
-          'Tap the mic when you want to speak.'
-        );
-
-        if (mySeat) {
-          rejoin();
-        }
-
+        Alert.alert('You were unmuted', 'Tap the mic when you want to speak.');
+        if (mySeat) rejoin();
         break;
 
       case 'BAN':
-        Alert.alert(
-          'Removed from room',
-          'You were banned from this room.'
-        );
-
+        Alert.alert('Removed from room', 'You were banned from this room.');
         goBackFromRoom();
-
         break;
 
       default:
@@ -435,456 +421,301 @@ export function RoomScreen() {
     }
   };
 
-  const {
-    messages,
-    sendMessage,
-    giftEvents,
-  } = useLiveChat(
-    'ROOM',
-    roomId,
-    {
-      onModeration: handleModerationEvent,
+  const { messages, sendMessage, giftEvents } = useLiveChat('ROOM', roomId, {
+    onModeration: handleModerationEvent,
+    onRoomTheme: (event) =>
+      queryClient.setQueryData<RoomDetails | undefined>(
+        ['rooms', roomId],
+        (prev) =>
+          prev ? { ...prev, themeColor: event.themeColor } : prev
+      ),
+  });
 
-      // Host re-themed the room: patch it into the cached room details so
-      // every screen colour derived from it changes immediately.
-      onRoomTheme: (event) =>
-        queryClient.setQueryData<
-          RoomDetails | undefined
-        >(
-          ['rooms', roomId],
-          (prev) =>
-            prev
-              ? {
-                  ...prev,
-                  themeColor:
-                    event.themeColor,
-                }
-              : prev
-        ),
-    }
+  const chatFeedRef = useRef<LiveChatFeedHandle>(null);
+
+  /* GRID MATH */
+  const seatCount = room?.seatCount ?? 8;
+  const isAudio = room?.mode === 'AUDIO';
+
+  const ROOM_HORIZONTAL_PADDING = 0;
+  const roomWidth = Math.max(
+    320,
+    screenWidth - ROOM_HORIZONTAL_PADDING * 2
+  );
+  const stageHeight = Math.max(
+    380,
+    screenHeight - insets.top - insets.bottom - 860
   );
 
-  const chatFeedRef =
-    useRef<LiveChatFeedHandle>(null);
+  const layout = computeSeatLayout(
+    seatCount,
+    isAudio,
+    roomWidth,
+    stageHeight
+  );
 
-  /*
-   * GRID
-   */
-  const seatCount =
-    room?.seatCount ?? 8;
-
-  const {
-    cols,
-    rows,
-  } =
-    gridForSeatCount(seatCount);
-
-  const H_PADDING =
-    spacing.sm * 2;
-
-  const GAP =
-    spacing.xs;
-
-  const gridWidth =
-    screenWidth - H_PADDING;
-
-  const tileWidth =
-    (
-      gridWidth -
-      GAP * (cols - 1)
-    ) / cols;
-
-  const tileHeight =
-    tileWidth * 1.15;
-
-  /*
-   * SEAT REQUEST
-   */
+  /* SEAT REQUEST */
   const seatMutation = useMutation({
-    mutationFn: (
-      seatNumber: number
-    ) =>
-      requestSeat(
-        roomId,
-        seatNumber
-      ),
-
+    mutationFn: (seatNumber: number) => requestSeat(roomId, seatNumber),
     onSuccess: () => {
-      queryClient.invalidateQueries({
-        queryKey: [
-          'rooms',
-          roomId,
-        ],
-      });
-
+      queryClient.invalidateQueries({ queryKey: ['rooms', roomId] });
       rejoin();
     },
-
     onError: (error: any) => {
       const message =
-        error?.response?.data?.message ??
-        'Could not take that seat';
-
-      if (
-        room?.privacy !== 'PUBLIC'
-      ) {
+        error?.response?.data?.message ?? 'Could not take that seat';
+      if (room?.privacy !== 'PUBLIC') {
         Alert.alert(
           'Request sent',
           'A pending request was created — the host needs to approve it before you get a seat.'
         );
       } else {
-        Alert.alert(
-          'Could not take seat',
-          message
-        );
+        Alert.alert('Could not take seat', message);
       }
     },
   });
 
-  /*
-   * LEAVE SEAT
-   */
-  const leaveSeatMutation =
-    useMutation({
-      mutationFn: () =>
-        leaveSeat(roomId),
+  /* LEAVE SEAT */
+  const leaveSeatMutation = useMutation({
+    mutationFn: () => leaveSeat(roomId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['rooms', roomId] });
+      rejoin();
+    },
+  });
 
-      onSuccess: () => {
-        queryClient.invalidateQueries({
-          queryKey: [
-            'rooms',
-            roomId,
-          ],
-        });
+  const switchSeatMutation = useMutation({
+    mutationFn: async (seatNumber: number) => {
+      await leaveSeat(roomId);
+      return requestSeat(roomId, seatNumber);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['rooms', roomId] });
+      rejoin();
+    },
+    onError: (error: any) => {
+      queryClient.invalidateQueries({ queryKey: ['rooms', roomId] });
+      rejoin();
+      Alert.alert(
+        'Could not switch seat',
+        error?.response?.data?.message ?? 'Please try again.'
+      );
+    },
+  });
 
-        rejoin();
-      },
-    });
+  const seatCountMutation = useMutation({
+    mutationFn: (nextCount: number) =>
+      updateRoomSeatCount(roomId, nextCount),
+    onSuccess: (result) => {
+      queryClient.setQueryData<RoomDetails | undefined>(
+        ['rooms', roomId],
+        (prev) => (prev ? { ...prev, seatCount: result.seatCount } : prev)
+      );
+    },
+    onError: (error: any) =>
+      Alert.alert(
+        'Could not change seats',
+        error?.response?.data?.message ??
+          'Please remove guests from higher seats first.'
+      ),
+  });
 
-  /*
-   * APPROVE
-   */
-  const approveMutation =
-    useMutation({
-      mutationFn: ({
-        requestId,
-        seatNumber,
-      }: {
-        requestId: string;
-        seatNumber: number;
-      }) =>
-        approveSeatRequest(
-          roomId,
-          requestId,
-          seatNumber
-        ),
+  /* APPROVE */
+  const approveMutation = useMutation({
+    mutationFn: ({
+      requestId,
+      seatNumber,
+    }: {
+      requestId: string;
+      seatNumber: number;
+    }) => approveSeatRequest(roomId, requestId, seatNumber),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['rooms', roomId] });
+      queryClient.invalidateQueries({
+        queryKey: ['rooms', roomId, 'seat-requests'],
+      });
+    },
+    onError: (error: any) =>
+      Alert.alert(
+        'Could not approve',
+        error?.response?.data?.message ?? 'Something went wrong'
+      ),
+  });
 
-      onSuccess: () => {
-        queryClient.invalidateQueries({
-          queryKey: [
-            'rooms',
-            roomId,
-          ],
-        });
+  /* REJECT */
+  const rejectMutation = useMutation({
+    mutationFn: (requestId: string) =>
+      rejectSeatRequest(roomId, requestId),
+    onSuccess: () =>
+      queryClient.invalidateQueries({
+        queryKey: ['rooms', roomId, 'seat-requests'],
+      }),
+  });
 
-        queryClient.invalidateQueries({
-          queryKey: [
-            'rooms',
-            roomId,
-            'seat-requests',
-          ],
-        });
-      },
+  /* REMOVE */
+  const kickMutation = useMutation({
+    mutationFn: (userId: string) => removeGuest(roomId, userId),
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: ['rooms', roomId] }),
+    onError: (error: any) =>
+      Alert.alert(
+        'Could not remove',
+        error?.response?.data?.message ?? 'Something went wrong'
+      ),
+  });
 
-      onError: (error: any) =>
-        Alert.alert(
-          'Could not approve',
-          error?.response?.data?.message ??
-            'Something went wrong'
-        ),
-    });
+  /* THEME */
+  const themeMutation = useMutation({
+    mutationFn: (hex: string) => updateRoomTheme(roomId, hex),
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: ['rooms', roomId] }),
+    onError: (error: any) =>
+      Alert.alert(
+        'Could not change theme',
+        error?.response?.data?.message ?? 'Something went wrong'
+      ),
+  });
 
-  /*
-   * REJECT
-   */
-  const rejectMutation =
-    useMutation({
-      mutationFn: (
-        requestId: string
-      ) =>
-        rejectSeatRequest(
-          roomId,
-          requestId
-        ),
+  const modeMutation = useMutation({
+    mutationFn: (mode: 'VIDEO' | 'AUDIO') => updateRoomMode(roomId, mode),
+    onSuccess: (result) => {
+      queryClient.setQueryData<RoomDetails | undefined>(
+        ['rooms', roomId],
+        (prev) => (prev ? { ...prev, mode: result.mode } : prev)
+      );
+      rejoin();
+    },
+    onError: (error: any) =>
+      Alert.alert(
+        'Could not switch live mode',
+        error?.response?.data?.message ??
+          error?.message ??
+          'Please try again.'
+      ),
+  });
 
-      onSuccess: () =>
-        queryClient.invalidateQueries({
-          queryKey: [
-            'rooms',
-            roomId,
-            'seat-requests',
-          ],
-        }),
-    });
+  /* MUTE / UNMUTE */
+  const muteMutation = useMutation({
+    mutationFn: (userId: string) => muteGuest(roomId, userId),
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: ['rooms', roomId] }),
+    onError: (error: any) =>
+      Alert.alert(
+        'Could not mute',
+        error?.response?.data?.message ?? 'Something went wrong'
+      ),
+  });
 
-  /*
-   * REMOVE
-   */
-  const kickMutation =
-    useMutation({
-      mutationFn: (
-        userId: string
-      ) =>
-        removeGuest(
-          roomId,
-          userId
-        ),
+  const unmuteMutation = useMutation({
+    mutationFn: (userId: string) => unmuteGuest(roomId, userId),
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: ['rooms', roomId] }),
+    onError: (error: any) =>
+      Alert.alert(
+        'Could not unmute',
+        error?.response?.data?.message ?? 'Something went wrong'
+      ),
+  });
 
-      onSuccess: () =>
-        queryClient.invalidateQueries({
-          queryKey: [
-            'rooms',
-            roomId,
-          ],
-        }),
+  /* BAN */
+  const banMutation = useMutation({
+    mutationFn: (userId: string) => banGuest(roomId, userId),
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: ['rooms', roomId] }),
+    onError: (error: any) =>
+      Alert.alert(
+        'Could not ban',
+        error?.response?.data?.message ?? 'Something went wrong'
+      ),
+  });
 
-      onError: (error: any) =>
-        Alert.alert(
-          'Could not remove',
-          error?.response?.data?.message ??
-            'Something went wrong'
-        ),
-    });
+  /* PERMISSIONS */
+  const isHost = room?.hostId === user?.id;
+  const isModerator =
+    room?.moderatorIds?.includes(user?.id ?? '') ?? false;
+  const canManageRoom = isHost || isModerator;
 
-  /*
-   * THEME (host only — the backend enforces it too)
-   */
-  const themeMutation =
-    useMutation({
-      mutationFn: (
-        hex: string
-      ) =>
-        updateRoomTheme(
-          roomId,
-          hex
-        ),
-
-      onSuccess: () =>
-        queryClient.invalidateQueries({
-          queryKey: [
-            'rooms',
-            roomId,
-          ],
-        }),
-
-      onError: (error: any) =>
-        Alert.alert(
-          'Could not change theme',
-          error?.response?.data?.message ??
-            'Something went wrong'
-        ),
-    });
-
-  /*
-   * MUTE / UNMUTE
-   */
-  const muteMutation =
-    useMutation({
-      mutationFn: (
-        userId: string
-      ) =>
-        muteGuest(
-          roomId,
-          userId
-        ),
-
-      onSuccess: () =>
-        queryClient.invalidateQueries({
-          queryKey: [
-            'rooms',
-            roomId,
-          ],
-        }),
-
-      onError: (error: any) =>
-        Alert.alert(
-          'Could not mute',
-          error?.response?.data?.message ??
-            'Something went wrong'
-        ),
-    });
-
-  const unmuteMutation =
-    useMutation({
-      mutationFn: (
-        userId: string
-      ) =>
-        unmuteGuest(
-          roomId,
-          userId
-        ),
-
-      onSuccess: () =>
-        queryClient.invalidateQueries({
-          queryKey: [
-            'rooms',
-            roomId,
-          ],
-        }),
-
-      onError: (error: any) =>
-        Alert.alert(
-          'Could not unmute',
-          error?.response?.data?.message ??
-            'Something went wrong'
-        ),
-    });
-
-  /*
-   * BAN
-   */
-  const banMutation =
-    useMutation({
-      mutationFn: (
-        userId: string
-      ) =>
-        banGuest(
-          roomId,
-          userId
-        ),
-
-      onSuccess: () =>
-        queryClient.invalidateQueries({
-          queryKey: [
-            'rooms',
-            roomId,
-          ],
-        }),
-
-      onError: (error: any) =>
-        Alert.alert(
-          'Could not ban',
-          error?.response?.data?.message ??
-            'Something went wrong'
-        ),
-    });
-
-  /*
-   * ROOM PERMISSIONS
-   */
-  const isHost =
-    room?.hostId === user?.id;
-
-  // Where each seated person is on screen, for the flying-gift animation.
+  /* SEAT VIEWS REF (for gift animation) */
   const seatViews = useRef(new Map<string, View>());
   const resolveGiftTarget = (event: { recipientId: string }) =>
     new Promise<{ x: number; y: number } | null>((resolve) => {
       const v = seatViews.current.get(event.recipientId);
       if (!v) return resolve(null);
-      v.measureInWindow((x, y, w, h) => resolve({ x: x + w / 2, y: y + h / 2 }));
+      v.measureInWindow((x, y, w, h) =>
+        resolve({ x: x + w / 2, y: y + h / 2 })
+      );
     });
 
-  const isModerator =
-    room?.moderatorIds?.includes(
-      user?.id ?? ''
-    ) ?? false;
-
-  const canManageRoom =
-    isHost || isModerator;
-
-  // Leaving by any route other than "Close room" (Android back, swipe-back, the
-  // app closing) used to leave the room OPEN for everyone. The host is now asked
-  // first, and if the screen is torn down anyway the room is closed on the way out
-  // (and if even that fails, the backend closes it once the host has been gone
-  // ~90 seconds).
+  /* HOST LEAVES → CLOSE ROOM */
   const roomClosedRef = useRef(false);
   const hostRef = useRef(false);
   hostRef.current = isHost;
+
   useEffect(() => {
     return navigation.addListener('beforeRemove', (e: any) => {
       if (!hostRef.current || roomClosedRef.current) return;
       e.preventDefault();
-      Alert.alert('Close this room?', 'As the host, leaving closes the room for everyone in it.', [
-        { text: 'Stay', style: 'cancel' },
-        {
-          text: 'Close room',
-          style: 'destructive',
-          onPress: async () => {
-            roomClosedRef.current = true;
-            await closeRoom(roomId).catch(() => {});
-            navigation.dispatch(e.data.action);
+      Alert.alert(
+        'Close this room?',
+        'As the host, leaving closes the room for everyone in it.',
+        [
+          { text: 'Stay', style: 'cancel' },
+          {
+            text: 'Close room',
+            style: 'destructive',
+            onPress: async () => {
+              roomClosedRef.current = true;
+              await closeRoom(roomId).catch(() => {});
+              navigation.dispatch(e.data.action);
+            },
           },
-        },
-      ]);
+        ]
+      );
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [navigation, roomId]);
+
   useEffect(
     () => () => {
-      if (hostRef.current && !roomClosedRef.current) closeRoom(roomId).catch(() => {});
+      if (hostRef.current && !roomClosedRef.current)
+        closeRoom(roomId).catch(() => {});
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [roomId],
+    [roomId]
   );
 
-  const mySeat =
-    room?.seats.find(
-      (s) =>
-        s.userId === user?.id
-    );
+  const mySeat = room?.seats.find((s) => s.userId === user?.id);
 
-  /*
-   * DETECT REMOVED HOST SEAT
-   */
-  const wasSeatedRef =
-    useRef(false);
-
+  /* DETECT REMOVED HOST SEAT */
+  const wasSeatedRef = useRef(false);
   useEffect(() => {
     if (mySeat) {
-      wasSeatedRef.current =
-        true;
-    } else if (
-      wasSeatedRef.current &&
-      joinState?.role === 'host'
-    ) {
-      wasSeatedRef.current =
-        false;
-
+      wasSeatedRef.current = true;
+    } else if (wasSeatedRef.current && joinState?.role === 'host') {
+      wasSeatedRef.current = false;
       Alert.alert(
         'Removed from seat',
         'You were removed from a seat in this room.'
       );
-
       rejoin();
     }
-
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mySeat]);
 
-  /*
-   * CLOSE ROOM
-   */
+  /* CLOSE ROOM */
   const handleClose = () => {
     if (isHost) {
       Alert.alert(
         'Close this room?',
         'This ends the room for everyone in it.',
         [
-          {
-            text: 'Cancel',
-            style: 'cancel',
-          },
-
+          { text: 'Cancel', style: 'cancel' },
           {
             text: 'Close room',
             style: 'destructive',
-
             onPress: async () => {
               roomClosedRef.current = true;
-              await closeRoom(
-                roomId
-              ).catch(() => {});
-
+              await closeRoom(roomId).catch(() => {});
               goBackFromRoom();
             },
           },
@@ -895,647 +726,516 @@ export function RoomScreen() {
     }
   };
 
-  /*
-   * LIKE
-   */
+  /* LIKE */
   const handleLike = () => {
-    setLikes(
-      (value) =>
-        value + 1
-    );
-
+    setLikes((value) => value + 1);
     setIsLikes(true);
-
-    setTimeout(
-      () =>
-        setIsLikes(false),
-      450
-    );
+    setTimeout(() => setIsLikes(false), 450);
   };
 
-  /*
-   * SOUND EFFECTS
-   */
-  const handleSounds = () => {
-    Alert.alert(
-      'Soundboard',
-      'Choose a sound effect.',
-      [
-        {
-          text: 'Applause',
-          onPress: () =>
-            Alert.alert(
-              'Soundboard',
-              'Applause effect triggered.'
-            ),
-        },
-
-        {
-          text: 'Cheer',
-          onPress: () =>
-            Alert.alert(
-              'Soundboard',
-              'Cheer effect triggered.'
-            ),
-        },
-
-        {
-          text: 'Drum Roll',
-          onPress: () =>
-            Alert.alert(
-              'Soundboard',
-              'Drum roll effect triggered.'
-            ),
-        },
-
-        {
-          text: 'Cancel',
-          style: 'cancel',
-        },
-      ]
-    );
+  /* NEXT EMPTY SEAT */
+  const findNextEmptySeat = (): number | null => {
+    if (!room) return null;
+    for (let i = 0; i < room.seatCount; i++) {
+      if (!room.seats.some((seat) => seat.seatNumber === i)) return i;
+    }
+    return null;
   };
 
-  /*
-   * NEXT EMPTY SEAT
-   */
-  const findNextEmptySeat =
-    (): number | null => {
-      if (!room) {
-        return null;
-      }
+  /* ------------------------------------------------------------------ */
+  /*  RENDERERS                                                          */
+  /* ------------------------------------------------------------------ */
 
-      for (
-        let i = 0;
-        i < room.seatCount;
-        i++
-      ) {
-        if (
-          !room.seats.some(
-            (seat) =>
-              seat.seatNumber === i
-          )
-        ) {
-          return i;
-        }
-      }
-
-      return null;
-    };
-
-  /*
-   * EMPTY SEAT
-   */
-  const renderEmptySeat = (
-    seatNumber: number
+  const renderHostHero = (
+    occupant: RoomSeatOccupant,
+    width: number,
+    height: number
   ) => {
-    const isSeatLocked = room?.lockedSeatNumbers?.includes(seatNumber) ?? false;
-    const onEmptySeatPress = () => {
-      if (canManageRoom) {
-        Alert.alert(
-          `Seat ${seatNumber + 1}`,
-          isSeatLocked ? 'This seat is locked.' : 'Choose what to do with this seat.',
-          [
-            { text: 'Cancel', style: 'cancel' },
-            {
-              text: isSeatLocked ? 'Unlock seat' : 'Lock seat',
-              onPress: () => lockSeatMutation.mutate({ seatNumber, locked: !isSeatLocked }),
-            },
-            !isSeatLocked ? {
-              text: 'Invite someone',
-              onPress: () => { setManageTab('invite'); setIsManageSheetOpen(true); },
-            } : undefined,
-          ].filter(Boolean) as any,
-        );
-        return;
-      }
-      if (isSeatLocked) {
-        Alert.alert('Seat locked', 'The host has locked this seat.');
-        return;
-      }
-      seatMutation.mutate(seatNumber);
-    };
-
-    return (
-    <Pressable
-      key={`empty-${seatNumber}`}
-      style={[
-        styles.seatBoard,
-
-        {
-          width: tileWidth,
-          height: tileHeight,
-
-          borderRadius:
-            radii.md,
-
-          borderColor:
-            `${themeColor}55`,
-        },
-      ]}
-      disabled={seatMutation.isPending || lockSeatMutation.isPending || !!mySeat}
-      onPress={onEmptySeatPress}
-    >
-      <View
-        style={[
-          styles.seatInner,
-
-          {
-            borderRadius:
-              radii.md - 3,
-
-            backgroundColor:
-              `${themeColor}22`,
-          },
-        ]}
-      >
-        <Text
-          style={styles.seatNumber}
-        >
-          {seatNumber + 1}
-        </Text>
-
-        {isSeatLocked ? (
-          <Ionicons name="lock-closed" size={30} color={themeColor} />
-        ) : (
-          <SofaIcon
-            width={tileWidth * 0.62}
-            height={tileHeight * 0.34}
-            color="#B4B4BF"
-          />
-        )}
-
-        <Text style={styles.tapToJoin}>
-          {isSeatLocked ? 'Locked' : canManageRoom ? 'Tap to manage' : 'Tap to join'}
-        </Text>
-      </View>
-    </Pressable>
-  );
-  };
-
-  /*
-   * FILLED SEAT
-   */
-  const renderFilledSeat = (
-    seatNumber: number,
-    occupant: RoomSeatOccupant
-  ) => {
-    const isMe =
-      occupant.userId ===
-      user?.id;
-
-    const remoteUid =
-      userAccountToUid.get(
-        occupant.userId
-      );
-
-    const isPublishingVideo =
-      isMe
+    const remoteUid = userAccountToUid.get(occupant.userId);
+    const showVideo =
+      room?.mode === 'VIDEO' &&
+      (occupant.userId === user?.id
         ? true
-        : remoteUid != null &&
-          remoteUids.has(
-            remoteUid
-          );
-
-    const canModerate =
-      canManageRoom &&
-      !isMe;
-
-    const handleTap = () => {
-      if (!canModerate) {
-        return;
-      }
-
-      const guestName =
-        occupant.displayName ??
-        'Guest';
-
-      const isGuestMuted =
-        room?.mutedUserIds?.includes(
-          occupant.userId
-        ) ?? false;
-
-      // Android alerts show at most 3 buttons, so remove/ban live one
-      // level down.
-      Alert.alert(
-        guestName,
-
-        'Moderate this guest',
-
-        [
-          {
-            text: 'Cancel',
-            style: 'cancel',
-          },
-
-          {
-            text: isGuestMuted
-              ? 'Unmute'
-              : 'Mute',
-
-            onPress: () =>
-              isGuestMuted
-                ? unmuteMutation.mutate(
-                    occupant.userId
-                  )
-                : muteMutation.mutate(
-                    occupant.userId
-                  ),
-          },
-
-          {
-            text: 'Remove or ban…',
-
-            onPress: () =>
-              Alert.alert(
-                guestName,
-
-                'Choose an action',
-
-                [
-                  {
-                    text: 'Cancel',
-                    style: 'cancel',
-                  },
-
-                  {
-                    text: 'Remove from seat',
-
-                    onPress: () =>
-                      kickMutation.mutate(
-                        occupant.userId
-                      ),
-                  },
-
-                  {
-                    text: 'Ban from room',
-
-                    style: 'destructive',
-
-                    onPress: () =>
-                      banMutation.mutate(
-                        occupant.userId
-                      ),
-                  },
-                ]
-              ),
-          },
-        ]
-      );
-    };
+        : remoteUid != null && remoteUids.has(remoteUid));
 
     return (
       <Pressable
-        key={`filled-${seatNumber}`}
-        // remembered so a gift can fly to this seat
+        key={`host-${occupant.seatNumber}`}
         collapsable={false}
         ref={(r) => {
           if (r) seatViews.current.set(occupant.userId, r as unknown as View);
           else seatViews.current.delete(occupant.userId);
         }}
-        style={[
-          styles.seatFilled,
+                        style={[styles.seatTile, { width, height, borderRadius: 0 }]}
+        onPress={() => {
+          if (!canManageRoom) return;
+          Alert.alert(
+            occupant.displayName ?? 'Host',
+            'Host is live. Use More for room controls.'
+          );
+        }}
+      >
+        {showVideo ? (
+          <AgoraVideoView
+            uid={occupant.userId === user?.id ? 0 : remoteUid}
+            style={StyleSheet.absoluteFill}
+          />
+        ) : (
+          <View style={styles.audioCenter}>
+            <Avatar
+              name={occupant.displayName ?? 'Host'}
+              size={Math.min(height * 0.45, 96)}
+            />
+          </View>
+        )}
 
-          {
-            width:
-              tileWidth,
+        <LinearGradient
+          colors={['transparent', 'rgba(0,0,0,0.82)']}
+          style={styles.seatNameScrim}
+        >
+          <Text style={styles.seatNameText} numberOfLines={1}>
+            {occupant.userId === user?.id
+              ? 'You'
+              : occupant.displayName ?? 'Host'}
+          </Text>
+        </LinearGradient>
 
-            height:
-              tileHeight,
+        <View style={[styles.hostBadge, { backgroundColor: themeColor }]}>
+          <Text style={styles.hostBadgeText}>HOST</Text>
+        </View>
+      </Pressable>
+    );
+  };
 
-            borderRadius:
-              radii.md,
+  const renderFilledSeat = (
+    seatNumber: number,
+    occupant: RoomSeatOccupant,
+    width: number,
+    height: number
+  ) => {
+    const isMe = occupant.userId === user?.id;
+    const remoteUid = userAccountToUid.get(occupant.userId);
+    const isHostSeat = occupant.userId === room?.hostId;
 
-            borderColor:
-              isMe
-                ? themeColor
-                : 'rgba(255,255,255,0.10)',
-          },
+    const isPublishingVideo =
+      room?.mode === 'VIDEO' &&
+      (isMe ? true : remoteUid != null && remoteUids.has(remoteUid));
+
+    const canModerate = canManageRoom && !isMe;
+
+    const handleTap = () => {
+      if (isMe) {
+        if (isHostSeat) {
+          Alert.alert('Host seat', 'The host seat is fixed.');
+        } else {
+          Alert.alert('Your seat', 'Leave this seat?', [
+            { text: 'Cancel', style: 'cancel' },
+            {
+              text: 'Leave seat',
+              style: 'destructive',
+              onPress: () => leaveSeatMutation.mutate(),
+            },
+          ]);
+        }
+        return;
+      }
+      if (!canModerate) return;
+
+      const guestName = occupant.displayName ?? 'Guest';
+      const isGuestMuted =
+        room?.mutedUserIds?.includes(occupant.userId) ?? false;
+
+      Alert.alert(guestName, 'Moderate this guest', [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: isGuestMuted ? 'Unmute' : 'Mute',
+          onPress: () =>
+            isGuestMuted
+              ? unmuteMutation.mutate(occupant.userId)
+              : muteMutation.mutate(occupant.userId),
+        },
+        {
+          text: 'Remove or ban…',
+          onPress: () =>
+            Alert.alert(guestName, 'Choose an action', [
+              { text: 'Cancel', style: 'cancel' },
+              {
+                text: 'Remove from seat',
+                onPress: () => kickMutation.mutate(occupant.userId),
+              },
+              {
+                text: 'Ban from room',
+                style: 'destructive',
+                onPress: () => banMutation.mutate(occupant.userId),
+              },
+            ]),
+        },
+      ]);
+    };
+
+    return (
+      <Pressable
+        key={`filled-${seatNumber}`}
+        collapsable={false}
+        ref={(r) => {
+          if (r) seatViews.current.set(occupant.userId, r as unknown as View);
+          else seatViews.current.delete(occupant.userId);
+        }}
+        
+          style={[
+          styles.seatTile,
+          { width, height, borderRadius: 0 },
         ]}
-        disabled={!canModerate}
+
         onPress={handleTap}
       >
         {isPublishingVideo ? (
           <AgoraVideoView
-            uid={
-              isMe
-                ? 0
-                : remoteUid!
-            }
-            style={
-              StyleSheet.absoluteFill
-            }
+            uid={isMe ? 0 : remoteUid!}
+            style={StyleSheet.absoluteFill}
           />
         ) : (
-          <Avatar
-            name={
-              occupant.displayName
-            }
-            size={Math.min(
-              tileHeight * 0.6,
-              72
-            )}
-          />
+          <View style={styles.audioCenter}>
+            <Avatar
+              name={occupant.displayName}
+              size={Math.min(height * 0.5, 72)}
+            />
+          </View>
         )}
 
         <LinearGradient
-          colors={[
-            'transparent',
-            'rgba(0,0,0,0.82)',
-          ]}
-          style={
-            styles.seatNameScrim
-          }
+          colors={['transparent', 'rgba(0,0,0,0.82)']}
+          style={styles.seatNameScrim}
         >
-          <Text
-            style={
-              styles.seatNameText
-            }
-            numberOfLines={1}
-          >
-            {isMe
-              ? 'You'
-              : occupant.displayName ??
-                'Guest'}
+          <Text style={styles.seatNameText} numberOfLines={1}>
+            {isMe ? 'You' : occupant.displayName ?? 'Guest'}
           </Text>
         </LinearGradient>
 
         {isMe && (
-          <View
-            style={[
-              styles.liveBadge,
-              {
-                backgroundColor:
-                  themeColor,
-              },
-            ]}
-          >
-            <Text
-              style={
-                styles.liveBadgeText
-              }
-            >
-              YOU
-            </Text>
+          <View style={[styles.liveBadge, { backgroundColor: themeColor }]}>
+            <Text style={styles.liveBadgeText}>YOU</Text>
           </View>
         )}
       </Pressable>
     );
   };
 
-  /*
-   * SEAT GRID
-   */
-  const renderSeatGrid = () => {
-    const rowsArray: React.ReactNode[] =
-      [];
-
-    for (
-      let r = 0;
-      r < rows;
-      r++
-    ) {
-      const cells: React.ReactNode[] =
-        [];
-
-      for (
-        let c = 0;
-        c < cols;
-        c++
-      ) {
-        const seatIndex =
-          r * cols + c;
-
-        if (
-          seatIndex >=
-          seatCount
-        ) {
-          cells.push(
-            <View
-              key={`spacer-${seatIndex}`}
-              style={{
-                width:
-                  tileWidth,
-
-                height:
-                  tileHeight,
-              }}
-            />
-          );
-        } else {
-          const occupant =
-            room?.seats.find(
-              (seat) =>
-                seat.seatNumber ===
-                seatIndex
-            );
-
-          cells.push(
-            occupant
-              ? renderFilledSeat(
-                  seatIndex,
-                  occupant
-                )
-              : renderEmptySeat(
-                  seatIndex
-                )
-          );
-        }
-      }
-
-      rowsArray.push(
-        <View
-          key={`row-${r}`}
-          style={{
-            flexDirection:
-              'row',
-
-            gap: GAP,
-
-            marginBottom:
-              r < rows - 1
-                ? GAP
-                : 0,
-          }}
-        >
-          {cells}
-        </View>
-      );
-    }
+  const renderEmptySeat = (
+    seatNumber: number,
+    width: number,
+    height: number
+  ) => {
+    const isSeatLocked =
+      room?.lockedSeatNumbers?.includes(seatNumber) ?? false;
 
     return (
-      <View
-        style={{
-          paddingHorizontal:
-            spacing.sm,
+      <Pressable
+        key={`empty-${seatNumber}`}
+         
+                    style={[
+            styles.seatBoard,
+            { width, height, borderRadius: 0 },
+          ]}
+		  
+        disabled={
+          seatMutation.isPending ||
+          lockSeatMutation.isPending ||
+          switchSeatMutation.isPending ||
+          seatCountMutation.isPending
+        }
+        onPress={() => {
+          if (canManageRoom) {
+            Alert.alert(
+              `Seat ${seatNumber + 1}`,
+              isSeatLocked
+                ? 'This seat is locked.'
+                : 'Choose what to do with this seat.',
+              [
+                { text: 'Cancel', style: 'cancel' },
+                {
+                  text: isSeatLocked ? 'Unlock seat' : 'Lock seat',
+                  onPress: () =>
+                    lockSeatMutation.mutate({
+                      seatNumber,
+                      locked: !isSeatLocked,
+                    }),
+                },
+                !isSeatLocked
+                  ? {
+                      text: 'Invite someone',
+                      onPress: () => {
+                        setManageTab('invite');
+                        setIsManageSheetOpen(true);
+                      },
+                    }
+                  : undefined,
+              ].filter(Boolean) as any
+            );
+            return;
+          }
+
+          if (isSeatLocked) {
+            Alert.alert('Seat locked', 'The host has locked this seat.');
+            return;
+          }
+
+          if (mySeat) {
+            Alert.alert(
+              `Switch to seat ${seatNumber + 1}?`,
+              'Your current seat will be released first.',
+              [
+                { text: 'Cancel', style: 'cancel' },
+                {
+                  text: 'Switch seat',
+                  onPress: () => switchSeatMutation.mutate(seatNumber),
+                },
+              ]
+            );
+            return;
+          }
+
+          seatMutation.mutate(seatNumber);
         }}
       >
-        {rowsArray}
-      </View>
+               <View
+          style={[
+            styles.seatInner,
+            {
+              borderRadius: 0,
+              backgroundColor: '#1C1F2C',
+            },
+          ]}
+        >
+        
+          <Text style={styles.seatNumber}>{seatNumber + 1}</Text>
+          {isSeatLocked ? (
+            <Ionicons name="lock-closed" size={25} color={themeColor} />
+          ) : (
+            <SofaIcon
+              width={width * 0.5}
+              height={height * 0.3}
+              color="#B4B4BF"
+            />
+          )}
+          <Text style={styles.tapToJoin}>
+            {isSeatLocked
+              ? 'Locked'
+              : canManageRoom
+              ? 'Tap to manage'
+              : 'Tap to join'}
+          </Text>
+        </View>
+      </Pressable>
     );
   };
 
+  const renderSeatGrid = () => {
+  if (!room) return null;
+
+  const hostSeat =
+    room.seats.find((s) => s.userId === room.hostId) ?? null;
+
+  const allSeatNumbers = Array.from({ length: seatCount }, (_, i) => i);
+
+  /* ---------- NEW: hero-3-bottom layout (6-seat VIDEO) ---------- */
+  if (layout.kind === 'hero-3-bottom' && hostSeat) {
+    const hostSeatNumber = hostSeat.seatNumber;
+
+    // Ordered guests (skip the host seat)
+    const guestSeatNumbers = allSeatNumbers.filter(
+      (n) => n !== hostSeatNumber
+    );
+
+    // First 2 guests go in the right column, the rest go in the bottom row
+    const rightGuests = guestSeatNumbers.slice(0, 2);
+    const bottomGuests = guestSeatNumbers.slice(2); // up to 3
+
+    const renderSlot = (
+      seatNumber: number,
+      width: number,
+      height: number
+    ) => {
+      const occupant =
+        room.seats.find((s) => s.seatNumber === seatNumber) ?? null;
+      return occupant
+        ? renderFilledSeat(seatNumber, occupant, width, height)
+        : renderEmptySeat(seatNumber, width, height);
+    };
+
+    return (
+      <View style={styles.stage}>
+        <View style={{ flex: 1, gap: GAP }}>
+          {/* TOP BLOCK: host (left) + 2 guests (right) */}
+          <View style={{ flexDirection: 'row', gap: GAP }}>
+            <View
+              style={{
+                width: layout.hostWidth,
+                height: layout.hostHeight,
+              }}
+            >
+              {renderHostHero(
+                hostSeat,
+                layout.hostWidth,
+                layout.hostHeight
+              )}
+            </View>
+
+            <View
+              style={{
+                flex: 1,
+                gap: GAP,
+                justifyContent: 'space-between',
+              }}
+            >
+              {rightGuests.map((n) =>
+                renderSlot(n, layout.guestTileWidth, layout.guestTileHeight)
+              )}
+            </View>
+          </View>
+
+          {/* BOTTOM ROW: 3 guests equal width */}
+          <View
+            style={{
+              flexDirection: 'row',
+              gap: GAP,
+              height: layout.bottomTileHeight,
+            }}
+          >
+            {bottomGuests.map((n) =>
+              renderSlot(
+                n,
+                layout.bottomTileWidth,
+                layout.bottomTileHeight
+              )
+            )}
+          </View>
+        </View>
+      </View>
+    );
+  }
+
+  /* ---------- Existing behavior for hero / uniform ---------- */
+  const useHero = layout.kind === 'hero' && !!hostSeat;
+  const hostSeatNumber = useHero ? hostSeat!.seatNumber : -1;
+
+  const gridSeatNumbers = allSeatNumbers.filter(
+    (n) => n !== hostSeatNumber
+  );
+
+  return (
+    <View style={[styles.stage, { height: stageHeight }]}>
+      {useHero && (
+        <View
+          style={[
+            styles.heroColumn,
+            { width: layout.hostWidth, height: stageHeight },
+          ]}
+        >
+          {renderHostHero(hostSeat!, layout.hostWidth, layout.hostHeight)}
+        </View>
+      )}
+
+      <View
+        style={[
+          styles.tileGrid,
+          {
+            width: useHero
+              ? roomWidth - layout.hostWidth - GAP
+              : roomWidth,
+            height: stageHeight,
+          },
+        ]}
+      >
+        {gridSeatNumbers.map((seatNumber) => {
+          const occupant =
+            room.seats.find((s) => s.seatNumber === seatNumber) ?? null;
+
+          if (occupant) {
+            return renderFilledSeat(
+              seatNumber,
+              occupant,
+              layout.guestTileWidth,
+              layout.guestTileHeight
+            );
+          }
+          return renderEmptySeat(
+            seatNumber,
+            layout.guestTileWidth,
+            layout.guestTileHeight
+          );
+        })}
+      </View>
+    </View>
+  );
+};
+  /* ------------------------------------------------------------------ */
+  /*  RENDER                                                             */
+  /* ------------------------------------------------------------------ */
+
   return (
     <View style={styles.root}>
-
       {/* BACKGROUND */}
       {isDefaultTheme ? (
-        <GradientBackground
-          style={StyleSheet.absoluteFill}
-        />
+        <GradientBackground style={StyleSheet.absoluteFill} />
       ) : (
         <LinearGradient
-          colors={[
-            themeColor,
-            '#0F0F18',
-          ]}
-          start={{
-            x: 0,
-            y: 0,
-          }}
-          end={{
-            x: 0,
-            y: 1,
-          }}
+          colors={[themeColor, '#0F0F18']}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 0, y: 1 }}
           style={StyleSheet.absoluteFill}
         />
       )}
 
       {/* HEADER */}
-      <View
-        style={[
-          styles.topBar,
-          {
-            paddingTop:
-              insets.top + 6,
-          },
-        ]}
-      >
-        <Avatar
-          name={room?.title}
-          size={36}
-        />
+      <View style={[styles.topBar, { paddingTop: insets.top + 6 }]}>
+        <Avatar name={room?.title} size={36} />
 
-        <View
-          style={
-            styles.hostText
-          }
-        >
-          <Text
-            style={
-              styles.hostName
-            }
-            numberOfLines={1}
-          >
-            {room?.title ??
-              'Party Room'}
+        <View style={styles.hostText}>
+          <Text style={styles.hostName} numberOfLines={1}>
+            {room?.title ?? 'Party Room'}
           </Text>
-
-          <Text
-            style={
-              styles.hostSub
-            }
-          >
-            ID: {roomId.slice(0, 8)}
-          </Text>
+          <Text style={styles.hostSub}>ID: {roomId.slice(0, 8)}</Text>
         </View>
 
         {/* LIKE */}
         <Pressable
           style={[
             styles.topIconButton,
-
-            isLikes && {
-              backgroundColor:
-                themeColor,
-            },
+            isLikes && { backgroundColor: themeColor },
           ]}
           onPress={handleLike}
         >
-          <Ionicons
-            name="heart"
-            size={16}
-            color="#FFF"
-          />
-
-          {likes > 0 && (
-            <Text
-              style={
-                styles.miniCount
-              }
-            >
-              {likes}
-            </Text>
-          )}
+          <Ionicons name="heart" size={16} color="#FFF" />
+          {likes > 0 && <Text style={styles.miniCount}>{likes}</Text>}
         </Pressable>
 
         {/* RANKING */}
         <Pressable
-          style={
-            styles.topIconButton
-          }
-          onPress={() =>
-            navigation.navigate(
-              'HonorRanking'
-            )
-          }
+          style={styles.topIconButton}
+          onPress={() => navigation.navigate('HonorRanking')}
         >
-          <Ionicons
-            name="trophy"
-            size={16}
-            color="#FFF"
-          />
+          <Ionicons name="trophy" size={16} color="#FFF" />
         </Pressable>
 
         {/* COINS */}
-        <View
-          style={
-            styles.coinPill
-          }
-        >
-          <Ionicons
-            name="diamond"
-            size={11}
-            color="#FFD45A"
-          />
-
-          <Text
-            style={
-              styles.coinPillText
-            }
-          >
-            {
-              walletQuery.data
-                ?.coin ?? '—'
-            }
+        <View style={styles.coinPill}>
+          <Ionicons name="diamond" size={11} color="#FFD45A" />
+          <Text style={styles.coinPillText}>
+            {walletQuery.data?.coin ?? '—'}
           </Text>
         </View>
 
         {/* CLOSE */}
-        <Pressable
-          onPress={handleClose}
-          style={
-            styles.topIconButton
-          }
-        >
-          <Ionicons
-            name="close"
-            size={20}
-            color="#FFF"
-          />
+        <Pressable onPress={handleClose} style={styles.topIconButton}>
+          <Ionicons name="close" size={20} color="#FFF" />
         </Pressable>
       </View>
 
       {/* INFO */}
-      <View
-        style={
-          styles.infoRow
-        }
-      >
+      <View style={styles.infoRow}>
         <Pressable
-          style={
-            styles.infoPill
-          }
+          style={styles.infoPill}
           onPress={() =>
             Alert.alert(
               'Room Rules',
@@ -1543,42 +1243,16 @@ export function RoomScreen() {
             )
           }
         >
-          <Ionicons
-            name="book-outline"
-            size={11}
-            color="#FFF"
-          />
-
-          <Text
-            style={
-              styles.infoPillText
-            }
-          >
-            Rules
-          </Text>
+          <Ionicons name="book-outline" size={11} color="#FFF" />
+          <Text style={styles.infoPillText}>Rules</Text>
         </Pressable>
 
         <Pressable
-          style={
-            styles.infoPill
-          }
-          onPress={() =>
-            navigation.navigate(
-              'HonorRanking'
-            )
-          }
+          style={styles.infoPill}
+          onPress={() => navigation.navigate('HonorRanking')}
         >
-          <Ionicons
-            name="podium-outline"
-            size={11}
-            color="#FFD45A"
-          />
-
-          <Text
-            style={
-              styles.infoPillText
-            }
-          >
+          <Ionicons name="podium-outline" size={11} color="#FFD45A" />
+          <Text style={styles.infoPillText}>
             Top{' '}
             {rankingQuery.isLoading
               ? '...'
@@ -1586,37 +1260,12 @@ export function RoomScreen() {
           </Text>
         </Pressable>
 
-        <View
-          style={{
-            flex: 1,
-          }}
-        />
+        <View style={{ flex: 1 }} />
 
-        <View
-          style={[
-            styles.themePill,
-            {
-              borderColor:
-                `${themeColor}99`,
-            },
-          ]}
-        >
-          <View
-            style={[
-              styles.themeDot,
-              {
-                backgroundColor:
-                  themeColor,
-              },
-            ]}
-          />
-
-          <Text
-            style={
-              styles.infoPillText
-            }
-          >
-            Live
+        <View style={[styles.themePill, { borderColor: `${themeColor}99` }]}>
+          <View style={[styles.themeDot, { backgroundColor: themeColor }]} />
+          <Text style={styles.infoPillText}>
+            {room?.mode === 'AUDIO' ? 'Audio' : 'Live'}
           </Text>
         </View>
       </View>
@@ -1625,568 +1274,198 @@ export function RoomScreen() {
       {renderSeatGrid()}
 
       {/* CHAT */}
-      <View
-        style={
-          styles.chatArea
-        }
-      >
-        <View
-          style={
-            styles.sideTabs
-          }
-        >
-          <View
-            style={[
-              styles.sideTab,
-              {
-                backgroundColor:
-                  themeColor,
-              },
-            ]}
-          >
-            <Text
-              style={
-                styles.sideTabTextActive
-              }
-            >
-              All
-            </Text>
+      <View style={styles.chatArea}>
+        <View style={styles.sideTabs}>
+          <View style={[styles.sideTab, { backgroundColor: themeColor }]}>
+            <Text style={styles.sideTabTextActive}>All</Text>
           </View>
-
-          <View
-            style={
-              styles.sideTab
-            }
-          >
-            <Text
-              style={
-                styles.sideTabText
-              }
-            >
-              Room
-            </Text>
+          <View style={styles.sideTab}>
+            <Text style={styles.sideTabText}>Room</Text>
           </View>
-
-          <View
-            style={
-              styles.sideTab
-            }
-          >
-            <Text
-              style={
-                styles.sideTabText
-              }
-            >
-              Chat
-            </Text>
+          <View style={styles.sideTab}>
+            <Text style={styles.sideTabText}>Chat</Text>
           </View>
         </View>
 
-        <View
-          style={
-            styles.chatColumn
-          }
-        >
+        <View style={styles.chatColumn}>
           <LiveChatFeed
-            ref={
-              chatFeedRef
-            }
-            messages={
-              messages
-            }
-            sendMessage={
-              sendMessage
-            }
+            ref={chatFeedRef}
+            messages={messages}
+            sendMessage={sendMessage}
             fill
           />
         </View>
       </View>
 
       {/* BOTTOM LIVE CONTROLS */}
-      <View
-        style={[
-          styles.bottomBar,
-          {
-            paddingBottom:
-              insets.bottom + 6,
-          },
-        ]}
-      >
-        {/* CHAT */}
+      <View style={[styles.bottomBar, { paddingBottom: insets.bottom + 8 }]}>
         <Pressable
-          style={
-            styles.bottomIcon
-          }
-          onPress={() =>
-            chatFeedRef.current?.focus()
-          }
+          style={styles.bottomIcon}
+          onPress={() => chatFeedRef.current?.focus()}
         >
-          <Ionicons
-            name="chatbubble-ellipses-outline"
-            size={23}
-            color="#FFF"
-          />
-
-          <Text
-            style={
-              styles.controlLabel
-            }
-          >
-            Chat
-          </Text>
-        </Pressable>
-
-        {/* MIC */}
-        {mySeat && (
-          <Pressable
-            style={
-              styles.bottomIcon
-            }
-            onPress={
-              forcedMuted
-                ? () =>
-                    Alert.alert(
-                      'You are muted',
-                      'The host has muted you in this room.'
-                    )
-                : toggleMic
-            }
-          >
+          <View style={styles.bottomOrb}>
             <Ionicons
-              name={
-                isMicMuted
-                  ? 'mic-off'
-                  : 'mic'
-              }
-              size={22}
-              color={
-                isMicMuted
-                  ? '#FF4D67'
-                  : '#3DF5A0'
-              }
-            />
-
-            <Text
-              style={
-                styles.controlLabel
-              }
-            >
-              {isMicMuted
-                ? 'Muted'
-                : 'Mic'}
-            </Text>
-          </Pressable>
-        )}
-
-        {/* BEAUTY */}
-        {mySeat && (
-          <Pressable
-            style={
-              styles.bottomIcon
-            }
-            onPress={() =>
-              setIsBeautySheetOpen(
-                true
-              )
-            }
-          >
-            <Ionicons
-              name="sparkles"
-              size={22}
-              color={
-                themeColor
-              }
-            />
-
-            <Text
-              style={
-                styles.controlLabel
-              }
-            >
-              Beauty
-            </Text>
-          </Pressable>
-        )}
-
-        {/* CAMERA */}
-        <Pressable
-          style={
-            styles.bottomIcon
-          }
-          onPress={() => {
-            if (mySeat) {
-              switchCamera();
-            } else {
-              Alert.alert(
-                'Join a seat',
-                'Tap an empty seat to join the mic first.'
-              );
-            }
-          }}
-        >
-          <Ionicons
-            name="camera-reverse-outline"
-            size={22}
-            color="#FFF"
-          />
-
-          <Text
-            style={
-              styles.controlLabel
-            }
-          >
-            Camera
-          </Text>
-        </Pressable>
-
-        {/* SOUNDS */}
-        <Pressable
-          style={
-            styles.bottomIcon
-          }
-          onPress={
-            handleSounds
-          }
-        >
-          <Ionicons
-            name="musical-notes-outline"
-            size={22}
-            color="#00E5FF"
-          />
-
-          <Text
-            style={
-              styles.controlLabel
-            }
-          >
-            Sounds
-          </Text>
-        </Pressable>
-
-        {/* PK */}
-        <Pressable
-          style={
-            styles.bottomIcon
-          }
-          onPress={() =>
-            navigation.navigate(
-              'PkScreen'
-            )
-          }
-        >
-          <View
-            style={[
-              styles.controlOrb,
-              {
-                borderColor:
-                  '#FFC24B',
-              },
-            ]}
-          >
-            <Ionicons
-              name="flash"
-              size={15}
-              color="#FFC24B"
-            />
-          </View>
-
-          <Text
-            style={
-              styles.controlLabel
-            }
-          >
-            PK
-          </Text>
-        </Pressable>
-
-        {/* GAMES */}
-        <Pressable
-          style={
-            styles.bottomIcon
-          }
-          onPress={() =>
-            navigation.navigate(
-              'GameCenter'
-            )
-          }
-        >
-          <View
-            style={[
-              styles.controlOrb,
-              {
-                backgroundColor:
-                  themeColor,
-              },
-            ]}
-          >
-            <Ionicons
-              name="game-controller"
-              size={16}
+              name="chatbubble-ellipses-outline"
+              size={20}
               color="#FFF"
             />
           </View>
-
-          <Text
-            style={
-              styles.controlLabel
-            }
-          >
-            Games
-          </Text>
+          <Text style={styles.controlLabel}>Chat</Text>
         </Pressable>
 
-        {/* GIFTS */}
         <Pressable
-          style={
-            styles.bottomIcon
+          style={styles.bottomIcon}
+          onPress={() =>
+            mySeat
+              ? forcedMuted
+                ? Alert.alert(
+                    'You are muted',
+                    'The host has muted you in this room.'
+                  )
+                : toggleMic()
+              : Alert.alert(
+                  'Join a seat',
+                  'Tap an empty seat to join the mic first.'
+                )
           }
-          onPress={() => {
-            const others =
-              (
-                room?.seats ??
-                []
-              ).filter(
-                (seat) =>
-                  seat.userId !==
-                  user?.id
-              );
+        >
+          <View style={styles.bottomOrb}>
+            <Ionicons
+              name={isMicMuted ? 'mic-off' : 'mic'}
+              size={20}
+              color={isMicMuted ? '#FF4D67' : '#FFF'}
+            />
+          </View>
+          <Text style={styles.controlLabel}>Mic</Text>
+        </Pressable>
 
-            if (
-              others.length ===
-              0
-            ) {
-              Alert.alert(
+        <Pressable
+          style={styles.bottomIcon}
+          onPress={() =>
+            canManageRoom
+              ? setIsManageSheetOpen(true)
+              : mySeat
+              ? Alert.alert('Seats', 'Tap an empty seat to change seats.')
+              : Alert.alert('Seats', 'Tap an empty seat to join.')
+          }
+        >
+          <View
+            style={[
+              styles.bottomOrb,
+              { borderColor: themeColor, borderWidth: 1.5 },
+            ]}
+          >
+            <Ionicons name="people-outline" size={20} color="#FFF" />
+          </View>
+          <Text style={styles.controlLabel}>Seats</Text>
+          {!!seatRequestsQuery.data?.length && (
+            <View style={styles.requestBadge}>
+              <Text style={styles.requestBadgeText}>
+                {seatRequestsQuery.data.length}
+              </Text>
+            </View>
+          )}
+        </Pressable>
+
+        <Pressable
+          style={styles.bottomIcon}
+          onPress={() => {
+            const others = (room?.seats ?? []).filter(
+              (seat) => seat.userId !== user?.id
+            );
+            if (!others.length)
+              return Alert.alert(
                 'No one to gift',
                 'Wait for someone else to take a seat first.'
               );
-
-              return;
-            }
-
             Alert.alert(
               'Send a gift to',
               undefined,
-
               others
-                .map(
-                  (seat) => ({
-                    text:
-                      seat.displayName ??
-                      'Guest',
-
-                    onPress: () =>
-                      setGiftRecipient(
-                        seat
-                      ),
-                  })
-                )
-
-                .concat([
-                  {
-                    text:
-                      'Cancel',
-                    style:
-                      'cancel',
-                  } as any,
-                ])
+                .map((seat) => ({
+                  text: seat.displayName ?? 'Guest',
+                  onPress: () => setGiftRecipient(seat),
+                }))
+                .concat([{ text: 'Cancel', style: 'cancel' } as any])
             );
           }}
         >
           <View
-            style={[
-              styles.controlOrb,
-              {
-                backgroundColor:
-                  themeColor,
-              },
-            ]}
+            style={[styles.bottomOrb, { backgroundColor: themeColor }]}
           >
-            <Ionicons
-              name="gift"
-              size={15}
-              color="#FFF"
-            />
+            <Ionicons name="gift" size={18} color="#FFF" />
           </View>
-
-          <Text
-            style={
-              styles.controlLabel
-            }
-          >
-            Gift
-          </Text>
+          <Text style={styles.controlLabel}>Gift</Text>
         </Pressable>
 
-        {/* TOOLS */}
         <Pressable
-          style={
-            styles.bottomIcon
-          }
-          onPress={() =>
-            setIsToolsOpen(
-              true
-            )
-          }
+          style={styles.bottomIcon}
+          onPress={() => setIsToolsOpen(true)}
         >
-          <Ionicons
-            name="grid-outline"
-            size={22}
-            color="#FFF"
-          />
-
-          <Text
-            style={
-              styles.controlLabel
-            }
-          >
-            Tools
-          </Text>
+          <View style={styles.bottomOrb}>
+            <Ionicons name="ellipsis-horizontal" size={21} color="#FFF" />
+          </View>
+          <Text style={styles.controlLabel}>More</Text>
         </Pressable>
-
-        {/* MANAGE */}
-        {canManageRoom && (
-          <Pressable
-            style={
-              styles.bottomIcon
-            }
-            onPress={() =>
-              setIsManageSheetOpen(
-                true
-              )
-            }
-          >
-            <Ionicons
-              name="people-outline"
-              size={22}
-              color="#FFF"
-            />
-
-            <Text
-              style={
-                styles.controlLabel
-              }
-            >
-              Manage
-            </Text>
-
-            {seatRequestsQuery
-              .data &&
-              seatRequestsQuery
-                .data.length >
-                0 && (
-                <View
-                  style={
-                    styles.notificationDot
-                  }
-                />
-              )}
-          </Pressable>
-        )}
       </View>
 
       {/* MANAGEMENT SHEET */}
       <Modal
-        visible={
-          isManageSheetOpen
-        }
+        visible={isManageSheetOpen}
         transparent
         animationType="slide"
-        onRequestClose={() =>
-          setIsManageSheetOpen(
-            false
-          )
-        }
+        onRequestClose={() => setIsManageSheetOpen(false)}
       >
-        <View
-          style={
-            styles.modalOverlay
-          }
-        >
+        <View style={styles.modalOverlay}>
           <View
             style={[
               styles.modalSheet,
-              {
-                paddingBottom:
-                  insets.bottom +
-                  spacing.md,
-              },
+              { paddingBottom: insets.bottom + spacing.md },
             ]}
           >
-            <View
-              style={
-                styles.tabRow
-              }
-            >
+            <View style={styles.tabRow}>
               <Pressable
-                style={
-                  styles.tabButton
-                }
-                onPress={() =>
-                  setManageTab(
-                    'requests'
-                  )
-                }
+                style={styles.tabButton}
+                onPress={() => setManageTab('requests')}
               >
                 <Text
                   style={[
                     styles.tabButtonText,
-                    manageTab ===
-                      'requests' &&
-                      styles.tabButtonTextActive,
+                    manageTab === 'requests' && styles.tabButtonTextActive,
                   ]}
                 >
                   Requests
-                  {seatRequestsQuery
-                    .data
-                    ?.length
+                  {seatRequestsQuery.data?.length
                     ? ` (${seatRequestsQuery.data.length})`
                     : ''}
                 </Text>
-
-                {manageTab ===
-                  'requests' && (
+                {manageTab === 'requests' && (
                   <View
                     style={[
                       styles.tabUnderline,
-                      {
-                        backgroundColor:
-                          themeColor,
-                      },
+                      { backgroundColor: themeColor },
                     ]}
                   />
                 )}
               </Pressable>
 
               <Pressable
-                style={
-                  styles.tabButton
-                }
-                onPress={() =>
-                  setManageTab(
-                    'invite'
-                  )
-                }
+                style={styles.tabButton}
+                onPress={() => setManageTab('invite')}
               >
                 <Text
                   style={[
                     styles.tabButtonText,
-                    manageTab ===
-                      'invite' &&
-                      styles.tabButtonTextActive,
+                    manageTab === 'invite' && styles.tabButtonTextActive,
                   ]}
                 >
                   Invite
                 </Text>
-
-                {manageTab ===
-                  'invite' && (
+                {manageTab === 'invite' && (
                   <View
                     style={[
                       styles.tabUnderline,
-                      {
-                        backgroundColor:
-                          themeColor,
-                      },
+                      { backgroundColor: themeColor },
                     ]}
                   />
                 )}
@@ -2194,195 +1473,159 @@ export function RoomScreen() {
 
               {isHost && (
                 <Pressable
-                  style={
-                    styles.tabButton
-                  }
-                  onPress={() =>
-                    setManageTab(
-                      'theme'
-                    )
-                  }
+                  style={styles.tabButton}
+                  onPress={() => setManageTab('theme')}
                 >
                   <Text
                     style={[
                       styles.tabButtonText,
-                      manageTab ===
-                        'theme' &&
-                        styles.tabButtonTextActive,
+                      manageTab === 'theme' && styles.tabButtonTextActive,
                     ]}
                   >
                     Theme
                   </Text>
-
-                  {manageTab ===
-                    'theme' && (
+                  {manageTab === 'theme' && (
                     <View
                       style={[
                         styles.tabUnderline,
-                        {
-                          backgroundColor:
-                            themeColor,
-                        },
+                        { backgroundColor: themeColor },
                       ]}
                     />
                   )}
                 </Pressable>
               )}
 
-              <View
-                style={{
-                  flex: 1,
-                }}
-              />
+              {isHost && (
+                <Pressable
+                  style={styles.tabButton}
+                  onPress={() => setManageTab('seats')}
+                >
+                  <Text
+                    style={[
+                      styles.tabButtonText,
+                      manageTab === 'seats' && styles.tabButtonTextActive,
+                    ]}
+                  >
+                    Seats
+                  </Text>
+                  {manageTab === 'seats' && (
+                    <View
+                      style={[
+                        styles.tabUnderline,
+                        { backgroundColor: themeColor },
+                      ]}
+                    />
+                  )}
+                </Pressable>
+              )}
+
+              <View style={{ flex: 1 }} />
 
               <Pressable
-                onPress={() =>
-                  setIsManageSheetOpen(
-                    false
-                  )
-                }
-                style={
-                  styles.closeButton
-                }
+                onPress={() => setIsManageSheetOpen(false)}
+                style={styles.closeButton}
               >
                 <Ionicons
                   name="close"
                   size={18}
-                  color={
-                    colors.textPrimary
-                  }
+                  color={colors.textPrimary}
                 />
               </Pressable>
             </View>
 
-            {manageTab ===
-              'theme' && isHost && (
+            {manageTab === 'seats' && isHost && (
+              <View style={styles.seatCountPanel}>
+                <Text style={styles.seatCountTitle}>Number of seats</Text>
+                <Text style={styles.seatCountHint}>
+                  Choose 4–12 seats. Occupied seats must fit inside the new
+                  limit.
+                </Text>
+                <View style={styles.seatCountOptions}>
+                  {[4, 6, 8, 9, 12].map((count) => {
+                    const active = seatCount === count;
+                    return (
+                      <Pressable
+                        key={count}
+                        disabled={seatCountMutation.isPending || active}
+                        onPress={() => seatCountMutation.mutate(count)}
+                        style={[
+                          styles.seatCountOption,
+                          active && {
+                            backgroundColor: themeColor,
+                            borderColor: themeColor,
+                          },
+                        ]}
+                      >
+                        <Text
+                          style={[
+                            styles.seatCountOptionText,
+                            active && styles.seatCountOptionTextActive,
+                          ]}
+                        >
+                          {count}
+                        </Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+              </View>
+            )}
+
+            {manageTab === 'theme' && isHost && (
               <RoomThemeSwatches
-                selected={
-                  themeColor
-                }
-                pending={
-                  themeMutation.isPending
-                }
-                onSelect={(hex) =>
-                  themeMutation.mutate(
-                    hex
-                  )
-                }
+                selected={themeColor}
+                pending={themeMutation.isPending}
+                onSelect={(hex) => themeMutation.mutate(hex)}
               />
             )}
 
-            {manageTab ===
-            'theme' ? null : manageTab ===
-            'requests' ? (
+            {manageTab === 'theme' || manageTab === 'seats' ? null : manageTab ===
+              'requests' ? (
               <FlatList
-                data={
-                  seatRequestsQuery.data ??
-                  []
-                }
-                keyExtractor={(
-                  request
-                ) =>
-                  request.id
-                }
+                data={seatRequestsQuery.data ?? []}
+                keyExtractor={(request) => request.id}
                 ListEmptyComponent={
-                  <Text
-                    style={
-                      styles.emptyRequestsText
-                    }
-                  >
-                    No pending
-                    requests.
+                  <Text style={styles.emptyRequestsText}>
+                    No pending requests.
                   </Text>
                 }
-                renderItem={({
-                  item,
-                }: {
-                  item: SeatRequestRow;
-                }) => (
-                  <View
-                    style={
-                      styles.requestRow
-                    }
-                  >
-                    <Text
-                      style={
-                        styles.requestName
-                      }
-                      numberOfLines={
-                        1
-                      }
-                    >
-                      {item.displayName ??
-                        'Guest'}
+                renderItem={({ item }: { item: SeatRequestRow }) => (
+                  <View style={styles.requestRow}>
+                    <Text style={styles.requestName} numberOfLines={1}>
+                      {item.displayName ?? 'Guest'}
                     </Text>
 
-                    <View
-                      style={
-                        styles.requestActions
-                      }
-                    >
+                    <View style={styles.requestActions}>
                       <Pressable
                         style={[
                           styles.requestApprove,
-                          {
-                            backgroundColor:
-                              themeColor,
-                          },
+                          { backgroundColor: themeColor },
                         ]}
                         onPress={() => {
-                          const seat =
-                            findNextEmptySeat();
-
-                          if (
-                            seat ==
-                            null
-                          ) {
+                          const seat = findNextEmptySeat();
+                          if (seat == null) {
                             Alert.alert(
                               'Room full',
                               'No empty seats available.'
                             );
-
                             return;
                           }
-
-                          approveMutation.mutate(
-                            {
-                              requestId:
-                                item.id,
-
-                              seatNumber:
-                                seat,
-                            }
-                          );
+                          approveMutation.mutate({
+                            requestId: item.id,
+                            seatNumber: seat,
+                          });
                         }}
                       >
-                        <Text
-                          style={
-                            styles.requestApproveText
-                          }
-                        >
+                        <Text style={styles.requestApproveText}>
                           Approve
                         </Text>
                       </Pressable>
 
                       <Pressable
-                        style={
-                          styles.requestReject
-                        }
-                        onPress={() =>
-                          rejectMutation.mutate(
-                            item.id
-                          )
-                        }
+                        style={styles.requestReject}
+                        onPress={() => rejectMutation.mutate(item.id)}
                       >
-                        <Text
-                          style={
-                            styles.requestRejectText
-                          }
-                        >
-                          Reject
-                        </Text>
+                        <Text style={styles.requestRejectText}>Reject</Text>
                       </Pressable>
                     </View>
                   </View>
@@ -2390,70 +1633,30 @@ export function RoomScreen() {
               />
             ) : (
               <FlatList
-                data={
-                  followersQuery.data ??
-                  []
-                }
-                keyExtractor={(
-                  follower
-                ) =>
-                  follower.id
-                }
+                data={followersQuery.data ?? []}
+                keyExtractor={(follower) => follower.id}
                 ListEmptyComponent={
-                  <Text
-                    style={
-                      styles.emptyRequestsText
-                    }
-                  >
+                  <Text style={styles.emptyRequestsText}>
                     {followersQuery.isLoading
                       ? 'Loading...'
                       : "You don't have any followers to invite yet."}
                   </Text>
                 }
-                renderItem={({
-                  item,
-                }) => (
-                  <View
-                    style={
-                      styles.requestRow
-                    }
-                  >
-                    <Text
-                      style={
-                        styles.requestName
-                      }
-                      numberOfLines={
-                        1
-                      }
-                    >
-                      {item.displayName ??
-                        'User'}
+                renderItem={({ item }) => (
+                  <View style={styles.requestRow}>
+                    <Text style={styles.requestName} numberOfLines={1}>
+                      {item.displayName ?? 'User'}
                     </Text>
 
                     <Pressable
                       style={[
                         styles.requestApprove,
-                        {
-                          backgroundColor:
-                            themeColor,
-                        },
+                        { backgroundColor: themeColor },
                       ]}
-                      disabled={
-                        inviteMutation.isPending
-                      }
-                      onPress={() =>
-                        inviteMutation.mutate(
-                          item.id
-                        )
-                      }
+                      disabled={inviteMutation.isPending}
+                      onPress={() => inviteMutation.mutate(item.id)}
                     >
-                      <Text
-                        style={
-                          styles.requestApproveText
-                        }
-                      >
-                        Invite
-                      </Text>
+                      <Text style={styles.requestApproveText}>Invite</Text>
                     </Pressable>
                   </View>
                 )}
@@ -2463,727 +1666,552 @@ export function RoomScreen() {
         </View>
       </Modal>
 
-      {/* A sent gift flies to the receiver's seat — visible to everyone in the room */}
-      <GiftFlyOverlay events={giftEvents} meId={user?.id} bottomInset={insets.bottom} resolveTarget={resolveGiftTarget} />
+      {/* GIFT FLY */}
+      <GiftFlyOverlay
+        events={giftEvents}
+        meId={user?.id}
+        bottomInset={insets.bottom}
+        resolveTarget={resolveGiftTarget}
+      />
 
-      {/* GIFT */}
+      {/* GIFT SHEET */}
       {giftRecipient && (
         <GiftSheet
-          visible={
-            !!giftRecipient
-          }
-          onClose={() =>
-            setGiftRecipient(
-              null
-            )
-          }
-          recipientId={
-            giftRecipient.userId
-          }
+          visible={!!giftRecipient}
+          onClose={() => setGiftRecipient(null)}
+          recipientId={giftRecipient.userId}
           context="ROOM"
           contextId={roomId}
-          recipientName={
-            giftRecipient.displayName ??
-            'Guest'
-          }
+          recipientName={giftRecipient.displayName ?? 'Guest'}
         />
       )}
 
       {/* TOOLS / BEAUTY */}
       <LiveToolsSheet
-        visible={
-          isToolsOpen ||
-          isBeautySheetOpen
-        }
+        visible={isToolsOpen || isBeautySheetOpen}
         onClose={() => {
-          setIsToolsOpen(
-            false
-          );
-
-          setIsBeautySheetOpen(
-            false
-          );
+          setIsToolsOpen(false);
+          setIsBeautySheetOpen(false);
         }}
         isHost={isHost}
-        sessionTitle={
-          room?.title ??
-          'Party Room'
-        }
-        switchCamera={
-          switchCamera
-        }
-        isMicMuted={
-          isMicMuted
-        }
-        toggleMic={
-          toggleMic
-        }
-        beauty={beauty}
-        setBeauty={
-          setBeauty
-        }
-        background={
-          background
-        }
-        setBackground={
-          setBackground
-        }
-        faceShape={
-          faceShape
-        }
-        setFaceShape={
-          setFaceShape
-        }
-        initialPanel={
-          isBeautySheetOpen
-            ? 'beauty'
+        roomMode={room?.mode}
+        onToggleRoomMode={
+          isHost
+            ? () =>
+                modeMutation.mutate(
+                  room?.mode === 'VIDEO' ? 'AUDIO' : 'VIDEO'
+                )
             : undefined
         }
+        onOpenPk={() => navigation.navigate('PkScreen')}
+        sessionTitle={room?.title ?? 'Party Room'}
+        switchCamera={switchCamera}
+        isMicMuted={isMicMuted}
+        toggleMic={toggleMic}
+        beauty={beauty}
+        setBeauty={setBeauty}
+        background={background}
+        setBackground={setBackground}
+        faceShape={faceShape}
+        setFaceShape={setFaceShape}
+        initialPanel={isBeautySheetOpen ? 'beauty' : undefined}
       />
 
       {/* LIKE ANIMATION */}
       {isLikes && (
-        <View
-          pointerEvents="none"
-          style={
-            styles.likeBurst
-          }
-        >
-          <Ionicons
-            name="heart"
-            size={42}
-            color="#FF4D9D"
-          />
-
-          <Text
-            style={
-              styles.likeBurstText
-            }
-          >
-            +1
-          </Text>
+        <View pointerEvents="none" style={styles.likeBurst}>
+          <Ionicons name="heart" size={42} color="#FF4D9D" />
+          <Text style={styles.likeBurstText}>+1</Text>
         </View>
       )}
     </View>
   );
 }
 
-const styles =
-  StyleSheet.create({
-    root: {
-      flex: 1,
-    },
+/* ------------------------------------------------------------------ */
+/*  STYLES                                                             */
+/* ------------------------------------------------------------------ */
 
-    topBar: {
-      flexDirection:
-        'row',
+const styles = StyleSheet.create({
+  root: {
+    flex: 1,
+  },
 
-      alignItems:
-        'center',
+  topBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: spacing.sm,
+    paddingBottom: spacing.sm,
+  },
 
-      gap: 8,
+  hostText: {
+    flex: 1,
+    marginLeft: 4,
+  },
 
-      paddingHorizontal:
-        spacing.sm,
+  hostName: {
+    color: '#FFF',
+    fontSize: 14,
+    fontWeight: '700',
+  },
 
-      paddingBottom:
-        spacing.sm,
-    },
+  hostSub: {
+    color: 'rgba(255,255,255,0.5)',
+    fontSize: 10,
+    marginTop: 2,
+  },
 
-    hostText: {
-      flex: 1,
-      marginLeft: 4,
-    },
+  topIconButton: {
+    minWidth: 34,
+    height: 34,
+    paddingHorizontal: 8,
+    borderRadius: 17,
+    backgroundColor: 'rgba(0,0,0,0.4)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexDirection: 'row',
+    gap: 3,
+  },
 
-    hostName: {
-      color: '#FFF',
-      fontSize: 14,
-      fontWeight: '700',
-    },
+  miniCount: {
+    color: '#FFF',
+    fontSize: 9,
+    fontWeight: '800',
+  },
 
-    hostSub: {
-      color:
-        'rgba(255,255,255,0.5)',
+  coinPill: {
+    minWidth: 34,
+    height: 34,
+    borderRadius: 17,
+    paddingHorizontal: 9,
+    backgroundColor: 'rgba(0,0,0,0.4)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexDirection: 'row',
+    gap: 4,
+  },
 
-      fontSize: 10,
+  coinPillText: {
+    color: '#FFF',
+    fontWeight: '800',
+    fontSize: 11,
+  },
 
-      marginTop: 2,
-    },
+  infoRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: spacing.sm,
+    paddingBottom: 7,
+    gap: 6,
+  },
 
-    topIconButton: {
-      minWidth: 34,
-      height: 34,
+  infoPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: 'rgba(0,0,0,0.42)',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 10,
+  },
 
-      paddingHorizontal: 8,
+  infoPillText: {
+    color: '#FFF',
+    fontSize: 10,
+    fontWeight: '700',
+  },
 
-      borderRadius: 17,
+  themePill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    backgroundColor: 'rgba(0,0,0,0.42)',
+    borderWidth: 1,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 10,
+  },
 
-      backgroundColor:
-        'rgba(0,0,0,0.4)',
+  themeDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 4,
+  },
 
-      alignItems:
-        'center',
+  /* ---------- STAGE (hero + grid OR uniform grid) ---------- */
+     stage: {
+  flexDirection: 'row',
+  paddingHorizontal: 0,
+  gap: GAP,
+  backgroundColor: '#111114',
+  width: '100%',
+  // no fixed height — the grid content defines it
+  marginTop: 24, 
+},
 
-      justifyContent:
-        'center',
+  heroColumn: {
+    alignSelf: 'stretch',
+  },
 
-      flexDirection:
-        'row',
+    tileGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: GAP,
+    justifyContent: 'flex-start',
+    alignContent: 'flex-start',
+  },
 
-      gap: 3,
-    },
+  /* Shared seat tile used by host hero + filled seats */
+    seatTile: {
+  backgroundColor: '#111114',
+  borderWidth: 0,
+  borderRadius: 0,
+  overflow: 'hidden',
+  position: 'relative',
+  alignItems: 'center',
+  justifyContent: 'center',
+},
 
-    miniCount: {
-      color: '#FFF',
-      fontSize: 9,
-      fontWeight: '800',
-    },
-
-    coinPill: {
-      minWidth: 34,
-      height: 34,
-
-      borderRadius: 17,
-
-      paddingHorizontal: 9,
-
-      backgroundColor:
-        'rgba(0,0,0,0.4)',
-
-      alignItems:
-        'center',
-
-      justifyContent:
-        'center',
-
-      flexDirection:
-        'row',
-
-      gap: 4,
-    },
-
-    coinPillText: {
-      color: '#FFF',
-      fontWeight: '800',
-      fontSize: 11,
-    },
-
-    infoRow: {
-      flexDirection:
-        'row',
-
-      alignItems:
-        'center',
-
-      paddingHorizontal:
-        spacing.sm,
-
-      paddingBottom: 7,
-
-      gap: 6,
-    },
-
-    infoPill: {
-      flexDirection:
-        'row',
-
-      alignItems:
-        'center',
-
-      gap: 4,
-
-      backgroundColor:
-        'rgba(0,0,0,0.42)',
-
-      paddingHorizontal: 8,
-
-      paddingVertical: 4,
-
-      borderRadius: 10,
-    },
-
-    infoPillText: {
-      color: '#FFF',
-      fontSize: 10,
-      fontWeight: '700',
-    },
-
-    themePill: {
-      flexDirection:
-        'row',
-
-      alignItems:
-        'center',
-
-      gap: 5,
-
-      backgroundColor:
-        'rgba(0,0,0,0.42)',
-
-      borderWidth: 1,
-
-      paddingHorizontal: 8,
-
-      paddingVertical: 4,
-
-      borderRadius: 10,
-    },
-
-    themeDot: {
-      width: 7,
-      height: 7,
-      borderRadius: 4,
-    },
-
-    seatBoard: {
-      backgroundColor:
-        'rgba(255,255,255,0.06)',
-
-      borderWidth: 1,
-
-      padding: 3,
-
-      alignItems:
-        'center',
-
-      justifyContent:
-        'center',
-    },
+      seatBoard: {
+    backgroundColor: '#111114',
+    borderWidth: 0,
+    borderRadius: 0,
+    padding: 1,             // was 3 — box touches its own edge
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
 
     seatInner: {
-      flex: 1,
-
-      width: '100%',
-
-      alignItems:
-        'center',
-
-      justifyContent:
-        'center',
-
-      overflow: 'hidden',
-    },
-
-    seatNumber: {
-      position:
-        'absolute',
-
-      top: 6,
-      left: 8,
-
-      color:
-        'rgba(255,255,255,0.55)',
-
-      fontSize: 11,
-
-      fontWeight: '700',
-
-      zIndex: 2,
-    },
-
-    tapToJoin: {
-      color:
-        'rgba(255,255,255,0.45)',
-
-      fontSize: 9,
-
-      marginTop: 5,
-    },
-
-    seatFilled: {
-      backgroundColor:
-        'rgba(255,255,255,0.04)',
-
-      borderWidth: 1.5,
-
-      alignItems:
-        'center',
-
-      justifyContent:
-        'center',
-
-      overflow: 'hidden',
-    },
-
-    seatNameScrim: {
-      position:
-        'absolute',
-
-      bottom: 0,
-
-      left: 0,
-
-      right: 0,
-
-      paddingVertical: 4,
-
-      paddingHorizontal: 6,
-    },
-
-    seatNameText: {
-      color: '#FFF',
-      fontSize: 11,
-      fontWeight: '700',
-    },
-
-    liveBadge: {
-      position:
-        'absolute',
-
-      top: 6,
-      right: 6,
-
-      paddingHorizontal: 6,
-
-      paddingVertical: 2,
-
-      borderRadius: 7,
-    },
-
-    liveBadgeText: {
-      color: '#FFF',
-      fontSize: 8,
-      fontWeight: '900',
-    },
-
-    chatArea: {
-      flex: 1,
-
-      flexDirection:
-        'row',
-
-      marginTop:
-        spacing.sm,
-
-      paddingHorizontal:
-        spacing.sm,
-    },
-
-    sideTabs: {
-      width: 42,
-
-      gap: 2,
-
-      justifyContent:
-        'flex-end',
-
-      paddingBottom:
-        spacing.sm,
-    },
-
-    sideTab: {
-      paddingVertical: 10,
-
-      borderTopRightRadius: 8,
-
-      borderBottomRightRadius: 8,
-
-      backgroundColor:
-        'rgba(255,255,255,0.08)',
-
-      alignItems:
-        'center',
-    },
-
-    sideTabText: {
-      color: '#AAA',
-      fontSize: 10,
-    },
-
-    sideTabTextActive: {
-      color: '#FFF',
-      fontSize: 10,
-      fontWeight: '800',
-    },
-
-    chatColumn: {
-      flex: 1,
-      marginLeft: 6,
-    },
-
-    bottomBar: {
-      flexDirection:
-        'row',
-
-      alignItems:
-        'center',
-
-      justifyContent:
-        'space-around',
-
-      paddingTop: 6,
-
-      paddingHorizontal: 3,
-
-      backgroundColor:
-        'rgba(0,0,0,0.62)',
-
-      borderTopWidth: 1,
-
-      borderTopColor:
-        'rgba(255,255,255,0.08)',
-    },
-
-    bottomIcon: {
-      alignItems:
-        'center',
-
-      justifyContent:
-        'center',
-
-      minWidth: 39,
-
-      height: 48,
-
-      position:
-        'relative',
-    },
-
-    controlLabel: {
-      color:
-        'rgba(255,255,255,0.82)',
-
-      fontSize: 8,
-
-      fontWeight: '600',
-
-      marginTop: 2,
-    },
-
-    controlOrb: {
-      width: 29,
-      height: 29,
-
-      borderRadius: 15,
-
-      alignItems:
-        'center',
-
-      justifyContent:
-        'center',
-
-      borderWidth: 1.5,
-    },
-
-    notificationDot: {
-      position:
-        'absolute',
-
-      top: 3,
-      right: 1,
-
-      width: 9,
-      height: 9,
-
-      borderRadius: 5,
-
-      backgroundColor:
-        '#FF4D4D',
-    },
-
-    likeBurst: {
-      position:
-        'absolute',
-
-      top: '42%',
-
-      alignSelf:
-        'center',
-
-      alignItems:
-        'center',
-
-      zIndex: 80,
-    },
-
-    likeBurstText: {
-      color: '#FFF',
-      fontSize: 12,
-      fontWeight: '900',
-      marginTop: -7,
-    },
-
-    closeButton: {
-      width: 36,
-      height: 36,
-
-      borderRadius:
-        radii.pill,
-
-      backgroundColor:
-        colors.surfaceRaised,
-
-      alignItems:
-        'center',
-
-      justifyContent:
-        'center',
-    },
-
-    modalOverlay: {
-      flex: 1,
-
-      backgroundColor:
-        'rgba(0,0,0,0.6)',
-
-      justifyContent:
-        'flex-end',
-    },
-
-    modalSheet: {
-      backgroundColor:
-        colors.surfaceRaised,
-
-      borderTopLeftRadius:
-        radii.xl,
-
-      borderTopRightRadius:
-        radii.xl,
-
-      padding:
-        spacing.md,
-
-      maxHeight: '75%',
-
-      minHeight: '40%',
-    },
-
-    tabRow: {
-      flexDirection:
-        'row',
-
-      alignItems:
-        'center',
-
-      marginBottom:
-        spacing.sm,
-
-      borderBottomWidth: 1,
-
-      borderBottomColor:
-        colors.borderLight,
-    },
-
-    tabButton: {
-      paddingVertical:
-        spacing.sm,
-
-      paddingHorizontal:
-        spacing.sm,
-
-      marginRight:
-        spacing.sm,
-    },
-
-    tabButtonText: {
-      ...type.body,
-
-      color:
-        colors.textMuted,
-
-      fontWeight:
-        '700',
-    },
-
-    tabButtonTextActive: {
-      color:
-        colors.textPrimary,
-    },
-
-    tabUnderline: {
-      height: 2,
-
-      marginTop:
-        spacing.xs,
-
-      borderRadius: 1,
-    },
-
-    emptyRequestsText: {
-      ...type.body,
-
-      color:
-        colors.textSecondary,
-
-      textAlign:
-        'center',
-
-      paddingVertical:
-        spacing.lg,
-    },
-
-    requestRow: {
-      flexDirection:
-        'row',
-
-      alignItems:
-        'center',
-
-      justifyContent:
-        'space-between',
-
-      paddingVertical:
-        spacing.sm,
-
-      borderBottomWidth: 1,
-
-      borderBottomColor:
-        colors.borderLight,
-    },
-
-    requestName: {
-      ...type.body,
-
-      color:
-        colors.textPrimary,
-
-      flex: 1,
-    },
-
-    requestActions: {
-      flexDirection:
-        'row',
-
-      gap:
-        spacing.xs,
-    },
-
-    requestApprove: {
-      paddingHorizontal:
-        spacing.sm,
-
-      paddingVertical: 6,
-
-      borderRadius:
-        radii.sm,
-    },
-
-    requestApproveText: {
-      color: '#FFF',
-      fontWeight: '700',
-      fontSize: 12,
-    },
-
-    requestReject: {
-      paddingHorizontal:
-        spacing.sm,
-
-      paddingVertical: 6,
-
-      borderRadius:
-        radii.sm,
-
-      backgroundColor:
-        'rgba(255,255,255,0.1)',
-    },
-
-    requestRejectText: {
-      color:
-        colors.textSecondary,
-
-      fontWeight:
-        '700',
-
-      fontSize: 12,
-    },
-  });
+    flex: 1,
+    width: '100%',
+    borderRadius: 0,
+    backgroundColor: '#111114',
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'hidden',
+  },
+
+  seatNumber: {
+    position: 'absolute',
+    top: 6,
+    left: 8,
+    color: 'rgba(255,255,255,0.55)',
+    fontSize: 11,
+    fontWeight: '700',
+    zIndex: 2,
+  },
+
+  tapToJoin: {
+    color: 'rgba(255,255,255,0.45)',
+    fontSize: 9,
+    marginTop: 5,
+  },
+
+  /* Center block used for audio-mode tiles (avatar only) */
+  audioCenter: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+
+  seatNameScrim: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    paddingVertical: 4,
+    paddingHorizontal: 6,
+  },
+
+  seatNameText: {
+    color: '#FFF',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+
+  liveBadge: {
+    position: 'absolute',
+    top: 6,
+    right: 6,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 7,
+  },
+
+  liveBadgeText: {
+    color: '#FFF',
+    fontSize: 8,
+    fontWeight: '900',
+  },
+
+  hostBadge: {
+    position: 'absolute',
+    top: 10,
+    left: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 10,
+  },
+
+  hostBadgeText: {
+    color: '#FFF',
+    fontSize: 11,
+    fontWeight: '900',
+  },
+
+  /* ---------- BOTTOM BAR ---------- */
+  bottomOrb: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(6,10,22,0.86)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.14)',
+  },
+
+  requestBadge: {
+    position: 'absolute',
+    top: -2,
+    right: 4,
+    minWidth: 17,
+    height: 17,
+    paddingHorizontal: 4,
+    borderRadius: 9,
+    backgroundColor: '#FF315F',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1.5,
+    borderColor: '#07101E',
+  },
+
+  requestBadgeText: { color: '#FFF', fontSize: 9, fontWeight: '900' },
+
+ chatArea: {
+  position: 'absolute',
+  left: spacing.sm,
+  right: spacing.sm,
+  bottom: 110,             // ← was 76. Sits above the bottom bar.
+  height: 120,             // ← slightly taller so it still feels usable
+  flexDirection: 'row',
+  paddingHorizontal: 0,
+  zIndex: 30,
+},
+
+  sideTabs: {
+    width: 42,
+    gap: 2,
+    justifyContent: 'flex-end',
+    paddingBottom: spacing.sm,
+  },
+
+  sideTab: {
+    paddingVertical: 10,
+    borderTopRightRadius: 8,
+    borderBottomRightRadius: 8,
+    backgroundColor: 'rgba(255,255,255,0.08)',
+    alignItems: 'center',
+  },
+
+  sideTabText: {
+    color: '#AAA',
+    fontSize: 10,
+  },
+
+  sideTabTextActive: {
+    color: '#FFF',
+    fontSize: 10,
+    fontWeight: '800',
+  },
+
+  chatColumn: {
+    flex: 1,
+    marginLeft: 6,
+  },
+
+  bottomBar: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-around',
+    paddingTop: 7,
+    paddingHorizontal: 8,
+    backgroundColor: 'rgba(3,7,18,0.86)',
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(255,255,255,0.08)',
+  },
+
+  bottomIcon: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    minWidth: 39,
+    height: 48,
+    position: 'relative',
+  },
+
+  controlLabel: {
+    color: 'rgba(255,255,255,0.82)',
+    fontSize: 8,
+    fontWeight: '600',
+    marginTop: 2,
+  },
+
+  likeBurst: {
+    position: 'absolute',
+    top: '42%',
+    alignSelf: 'center',
+    alignItems: 'center',
+    zIndex: 80,
+  },
+
+  likeBurstText: {
+    color: '#FFF',
+    fontSize: 12,
+    fontWeight: '900',
+    marginTop: -7,
+  },
+
+  closeButton: {
+    width: 36,
+    height: 36,
+    borderRadius: radii.pill,
+    backgroundColor: colors.surfaceRaised,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+
+  /* ---------- MODAL ---------- */
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    justifyContent: 'flex-end',
+  },
+
+  modalSheet: {
+    backgroundColor: colors.surfaceRaised,
+    borderTopLeftRadius: radii.xl,
+    borderTopRightRadius: radii.xl,
+    padding: spacing.md,
+    maxHeight: '75%',
+    minHeight: '40%',
+  },
+
+  tabRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: spacing.sm,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.borderLight,
+  },
+
+  tabButton: {
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.sm,
+    marginRight: spacing.sm,
+  },
+
+  tabButtonText: {
+    ...type.body,
+    color: colors.textMuted,
+    fontWeight: '700',
+  },
+
+  tabButtonTextActive: {
+    color: colors.textPrimary,
+  },
+
+  tabUnderline: {
+    height: 2,
+    marginTop: spacing.xs,
+    borderRadius: 1,
+  },
+
+  emptyRequestsText: {
+    ...type.body,
+    color: colors.textSecondary,
+    textAlign: 'center',
+    paddingVertical: spacing.lg,
+  },
+
+  seatCountPanel: { paddingVertical: spacing.md },
+  seatCountTitle: {
+    color: colors.textPrimary,
+    fontSize: 18,
+    fontWeight: '900',
+    marginBottom: 6,
+  },
+  seatCountHint: {
+    color: colors.textSecondary,
+    fontSize: 12,
+    lineHeight: 18,
+    marginBottom: spacing.md,
+  },
+  seatCountOptions: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
+  seatCountOption: {
+    minWidth: 58,
+    height: 48,
+    paddingHorizontal: 16,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: colors.borderLight,
+    backgroundColor: colors.surface,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  seatCountOptionText: {
+    color: colors.textPrimary,
+    fontSize: 15,
+    fontWeight: '800',
+  },
+  seatCountOptionTextActive: { color: '#FFF' },
+
+  requestRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: spacing.sm,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.borderLight,
+  },
+
+  requestName: {
+    ...type.body,
+    color: colors.textPrimary,
+    flex: 1,
+  },
+
+  requestActions: {
+    flexDirection: 'row',
+    gap: spacing.xs,
+  },
+
+  requestApprove: {
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 6,
+    borderRadius: radii.sm,
+  },
+
+  requestApproveText: {
+    color: '#FFF',
+    fontWeight: '700',
+    fontSize: 12,
+  },
+
+  requestReject: {
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 6,
+    borderRadius: radii.sm,
+    backgroundColor: 'rgba(255,255,255,0.1)',
+  },
+
+  requestRejectText: {
+    color: colors.textSecondary,
+    fontWeight: '700',
+    fontSize: 12,
+  },
+});

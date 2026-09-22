@@ -752,21 +752,41 @@ export function GoLiveScreen() {
 
       {/* Bottom bar: comment box, emoji, a menu of everything else, and gift.
           (Six loose dock buttons and no way for the host to comment before.) */}
-      <View style={styles.bottomBarWrap}>
-        <LiveBottomBar
-          onSend={handleSendMessage}
-          onGift={() => setIsViewerPickerOpen(true)}
-          bottomInset={insets.bottom}
-          menuItems={[
-            { key: 'pk', label: 'PK', icon: 'flash', onPress: () => setIsPkSheetOpen(true), active: isPkActive },
-            { key: 'beauty', label: 'Beauty', icon: 'sparkles', onPress: () => setIsBeautyOpen(true) },
-            { key: 'tools', label: 'Tools', icon: 'grid', onPress: () => setIsToolsOpen(true) },
-            { key: 'media', label: 'Video & music', icon: 'film', onPress: () => setIsMediaSheetOpen(true), active: !!media || !!music },
-            { key: 'mic', label: isMicMuted ? 'Unmute' : 'Mute', icon: isMicMuted ? 'mic-off' : 'mic', onPress: toggleMic, active: isMicMuted },
-            { key: 'end', label: 'End live', icon: 'power', onPress: () => setIsEndConfirmationVisible(true), danger: true },
-          ]}
-        />
+     {/* Bottom bar (VIEW 2) — built inline so the menu button opens the same
+    LiveToolsSheet that already works in VIEW 1. */}
+<View style={[styles.bottomBarWrap, { paddingBottom: insets.bottom }]}>
+  <View style={styles.liveDock}>
+    <TextInput
+      style={styles.liveDockInput}
+      placeholder="Say Hi..."
+      placeholderTextColor="rgba(255,255,255,0.5)"
+      returnKeyType="send"
+      onSubmitEditing={(e) => {
+        handleSendMessage(e.nativeEvent.text);
+        e.currentTarget.clear();
+      }}
+      blurOnSubmit={false}
+    />
+
+    <Pressable
+      onPress={() => setIsToolsOpen(true)}
+      style={styles.liveDockBtn}
+      accessibilityLabel="Open tools menu"
+    >
+      <Ionicons name="menu" size={24} color="#FFF" />
+    </Pressable>
+
+    <Pressable
+      onPress={() => setIsViewerPickerOpen(true)}
+      style={styles.liveDockBtn}
+      accessibilityLabel="Send a gift"
+    >
+      <View style={styles.giftOrb}>
+        <Ionicons name="gift" size={16} color="#FFF" />
       </View>
+    </Pressable>
+  </View>
+</View>
 
       {/* Sheets & Dialogs */}
       <LiveMediaSheet
@@ -1200,14 +1220,7 @@ const styles = StyleSheet.create({
     fontSize: 13,
     marginTop: 4,
   },
-  bottomBarWrap: {
-    position: 'absolute',
-    bottom: 0,
-    left: 0,
-    right: 0,
-    backgroundColor: 'rgba(14, 10, 26, 0.55)',
-    zIndex: 40,
-  },
+  
   bottomControlDock: {
     position: 'absolute',
     bottom: 0,
@@ -1303,6 +1316,36 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '600',
   },
+  bottomBarWrap: {
+  position: 'absolute',
+  bottom: 0,
+  left: 0,
+  right: 0,
+  backgroundColor: 'rgba(14, 10, 26, 0.55)',
+  zIndex: 40,
+},                          // ← comma, then close the object
+liveDock: {                 // ← new top-level style
+  flexDirection: 'row',
+  alignItems: 'center',
+  paddingHorizontal: 12,
+  paddingVertical: 8,
+  gap: 10,
+},
+liveDockBtn: {
+  width: 44,
+  height: 44,
+  alignItems: 'center',
+  justifyContent: 'center',
+},
+liveDockInput: {
+  flex: 1,
+  color: '#FFF',
+  fontSize: 14,
+  backgroundColor: 'rgba(255,255,255,0.12)',
+  borderRadius: 22,
+  paddingHorizontal: 16,
+  paddingVertical: 10,
+},
   endConfirmBtn: {
     flex: 1,
     paddingVertical: 12,

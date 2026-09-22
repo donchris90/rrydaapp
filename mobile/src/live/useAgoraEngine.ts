@@ -1,0 +1,585 @@
+import { useEffect, useRef, useState } from 'react';
+import { PermissionsAndroid, Platform } from 'react-native';
+import {
+  createAgoraRtcEngine,
+  ChannelProfileType,
+  ClientRoleType,
+  AudioAinsMode,
+  FaceShapeArea,
+  type IRtcEngine,
+  type IRtcEngineEx,
+  type IRtcEngineEventHandler,
+  type RtcConnection,
+} from 'react-native-agora';
+import { AGORA_APP_ID } from '../config';
+
+export type AgoraRole = 'host' | 'audience';
+
+// ── Beauty + background shape exposed to screens ──────────────────
+export interface BeautyState {
+  enabled: boolean;
+  lighteningContrastLevel: number; // 0 = low, 1 = normal, 2 = high
+  lighteningLevel: number;         // [0.0, 1.0] whitening
+  smoothnessLevel: number;         // [0.0, 1.0] skin smoothing
+  rednessLevel: number;            // [0.0, 1.0] rosy
+}
+
+// Face SHAPING (Eyes/Nose/Chin/Forehead/Lip) is a genuinely different
+// Agora API from skin beautification above — setFaceShapeAreaOptions,
+// not setBeautyEffectOptions. Real, verified against the actual SDK type
+// definitions (FaceShapeArea enum values and their documented ranges),
+// but worth being explicit about: the SDK's own docs mark face shaping
+// as a "value-added service" with separate billing — this may need to
+// be specifically enabled on the Agora Console account before it does
+// anything visible at all, regardless of how correctly it's wired here.
+export interface FaceShapeState {
+  enabled: boolean;
+  eyes: number;     // [0,100], default 50 — FaceShapeAreaEyescale
+  nose: number;     // [-100,100], default 50 — FaceShapeAreaNosegeneral
+  chin: number;     // [-100,100], default 0 — FaceShapeAreaChin
+  forehead: number; // [0,100], default 0 — FaceShapeAreaForehead
+  lip: number;      // [0,100], default 0 — FaceShapeAreaMouthlip
+}
+
+export type BackgroundMode = 'none' | 'blur' | 'color' | 'image';
+
+export interface BackgroundState {
+  mode: BackgroundMode;
+  color?: string;
+  imagePath?: string;
+  blurDegree: 'small' | 'large';
+}
+
+export const DEFAULT_BEAUTY: BeautyState = {
+  enabled: false,
+  lighteningContrastLevel: 1,
+  lighteningLevel: 0.7,
+  smoothnessLevel: 0.5,
+  rednessLevel: 0.1,
+};
+
+export const DEFAULT_FACE_SHAPE: FaceShapeState = {
+  enabled: false,
+  eyes: 50,
+  nose: 50,
+  chin: 0,
+  forehead: 0,
+  lip: 0,
+};
+
+export const DEFAULT_BACKGROUND: BackgroundState = {
+  mode: 'none',
+  blurDegree: 'large',
+};
+
+// Agora numeric enum values — 4.6.4 does not expose these as runtime
+// objects, only as types. Confirmed against the native SDK reference.
+const VBG_SOURCE_BLUR = 1;
+const VBG_SOURCE_COLOR = 2;
+const VBG_SOURCE_IMAGE = 3;
+const BLUR_DEGREE_SMALL = 1;
+const BLUR_DEGREE_LARGE = 2;
+// The SDK's enableVirtualBackground takes a segmentation property as a
+// REQUIRED third argument. It was being called with two, so the native side
+// received `undefined` where it expects a struct. 1 = SegModelAi, the SDK's
+// default all-scenario model; 0.5 is its documented default green capacity.
+const VBG_SEGMENTATION = { modelType: 1, greenCapacity: 0.5 };
+// The SDK's VirtualBackgroundSource uses snake_case field names and takes the
+// colour as a NUMBER (0xRRGGBB), not a CSS string. The code below used
+// camelCase names and a '#RRGGBB' string, which the native side silently
+// ignores — so the virtual background was never actually applied.
+const cssColorToInt = (hex: string): number => parseInt(hex.replace('#', ''), 16) || 0x1e1e2e;
+
+
+interface UseAgoraEngineParams {
+  channelId: string;
+  token: string;
+  userAccount: string;
+  role: AgoraRole;
+}
+
+interface UseAgoraEngineResult {
+  isJoined: boolean;
+  // True once the engine is created and laid out; screens key their video
+  // surface on it (see the comment where it is returned).
+  engineReady: boolean;
+  remoteUid: number | null;
+  error: string | null;
+  isMicMuted: boolean;
+  toggleMic: () => void;
+  switchCamera: () => void;
+  isNoiseSuppressionOn: boolean;
+  toggleNoiseSuppression: () => void;
+
+  // Beauty + virtual background
+  beauty: BeautyState;
+  setBeauty: (next: Partial<BeautyState>) => void;
+  background: BackgroundState;
+  setBackground: (next: Partial<BackgroundState>) => void;
+  faceShape: FaceShapeState;
+  setFaceShape: (next: Partial<FaceShapeState>) => void;
+
+  // PK battles — joining a second, independent channel (the opponent's)
+  // alongside your own via Agora's real joinChannelEx/leaveChannelEx API
+  // (the SDK's own documented mechanism for cross-channel co-hosting;
+  // verified in the actual type definitions before building this, not
+  // assumed). secondaryRemoteUid/secondaryConnection are null whenever
+  // no secondary channel is joined — most screens using this hook will
+  // simply never call joinSecondaryChannel and can ignore these.
+  secondaryRemoteUid: number | null;
+  secondaryConnection: RtcConnection | null;
+  joinSecondaryChannel: (channelId: string, token: string) => void;
+  leaveSecondaryChannel: () => void;
+  // A song from the host's phone playing into the live (host only).
+  music: { name: string; status: 'playing' | 'paused'; volume: number } | null;
+  musicError: string | null;
+  startMusic: (uri: string, name: string, loop?: boolean) => void;
+  pauseMusic: () => void;
+  resumeMusic: () => void;
+  stopMusic: () => void;
+  setMusicVolume: (volume: number) => void;
+}
+
+export function useAgoraEngine({
+  channelId,
+  token,
+  userAccount,
+  role,
+}: UseAgoraEngineParams): UseAgoraEngineResult {
+  const engineRef = useRef<IRtcEngine | null>(null);
+
+  // A song from the host's phone, played INTO the live: everyone hears it mixed in
+  // with the host's voice (the host's own phone plays it too).
+  const [music, setMusic] = useState<{ name: string; status: 'playing' | 'paused'; volume: number } | null>(null);
+  const [musicError, setMusicError] = useState<string | null>(null);
+  const [isJoined, setIsJoined] = useState(false);
+  const [remoteUid, setRemoteUid] = useState<number | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [isMicMuted, setIsMicMuted] = useState(false);
+  const [isNoiseSuppressionOn, setIsNoiseSuppressionOn] = useState(false);
+  const [engineReady, setEngineReady] = useState(false);
+
+  const [beauty, setBeautyState] = useState<BeautyState>(DEFAULT_BEAUTY);
+  const [background, setBackgroundState] = useState<BackgroundState>(DEFAULT_BACKGROUND);
+  const [faceShape, setFaceShapeState] = useState<FaceShapeState>(DEFAULT_FACE_SHAPE);
+  const [secondaryRemoteUid, setSecondaryRemoteUid] = useState<number | null>(null);
+  const [secondaryConnection, setSecondaryConnection] = useState<RtcConnection | null>(null);
+  // Ref, not state — read synchronously inside the event handler to tell
+  // a primary-channel callback apart from a secondary-channel one. State
+  // would be stale inside a handler registered once at engine creation.
+  const secondaryChannelIdRef = useRef<string | null>(null);
+
+  // Beauty + virtual background only make sense on the publishing side.
+  const shouldApplyVisualEffects = role === 'host';
+
+  useEffect(() => {
+    let cancelled = false;
+    let previewTimeout: ReturnType<typeof setTimeout> | undefined;
+    let handler: IRtcEngineEventHandler | null = null;
+
+    const requestCameraPermission = async () => {
+      if (role !== 'host' || Platform.OS !== 'android') return true;
+
+      const permissions = [
+        PermissionsAndroid.PERMISSIONS.CAMERA,
+        PermissionsAndroid.PERMISSIONS.RECORD_AUDIO,
+      ];
+
+      const result = await PermissionsAndroid.requestMultiple(permissions);
+      const cameraGranted = result[PermissionsAndroid.PERMISSIONS.CAMERA] === PermissionsAndroid.RESULTS.GRANTED;
+      const micGranted = result[PermissionsAndroid.PERMISSIONS.RECORD_AUDIO] === PermissionsAndroid.RESULTS.GRANTED;
+
+      if (!cameraGranted) {
+        throw new Error('Camera permission was denied. Allow camera access in Android Settings and try again.');
+      }
+      if (!micGranted) {
+        throw new Error('Microphone permission was denied. Allow microphone access in Android Settings and try again.');
+      }
+      return true;
+    };
+
+    const setup = async () => {
+      if (!AGORA_APP_ID) {
+        setError("Agora App ID is not configured — set app.json's expo.extra.agoraAppId");
+        return;
+      }
+      if (!userAccount) return;
+
+      try {
+        await requestCameraPermission();
+        if (cancelled) return;
+
+        const engine = createAgoraRtcEngine();
+        engineRef.current = engine;
+
+        const eventHandler: IRtcEngineEventHandler = {
+          onJoinChannelSuccess: () => setIsJoined(true),
+          onUserJoined: (connection, uid) => {
+            if (secondaryChannelIdRef.current && connection.channelId === secondaryChannelIdRef.current) {
+              setSecondaryRemoteUid(uid);
+            } else {
+              setRemoteUid(uid);
+            }
+          },
+          onUserOffline: (connection, uid) => {
+            if (secondaryChannelIdRef.current && connection.channelId === secondaryChannelIdRef.current) {
+              setSecondaryRemoteUid((current) => (current === uid ? null : current));
+            } else {
+              setRemoteUid((current) => (current === uid ? null : current));
+            }
+          },
+          onError: (err, msg) => setError(`Agora error ${err}: ${msg}`),
+          // Music playing state: 710 playing, 711 paused, 713 finished, 714 failed.
+          onAudioMixingStateChanged: (state) => {
+            if (state === 710) setMusic((m) => (m ? { ...m, status: 'playing' } : m));
+            else if (state === 711) setMusic((m) => (m ? { ...m, status: 'paused' } : m));
+            else if (state === 713) setMusic(null);
+            else if (state === 714) {
+              setMusic(null);
+              setMusicError('That file could not be played. Try an MP3 or M4A.');
+            }
+          },
+          // These callbacks are deliberately diagnostic: a blank local
+          // surface is usually caused by capture/permission failure, not
+          // by the RtcSurfaceView itself.
+          onLocalVideoStateChanged: (_source, state, reason) => {
+            if (role !== 'host') return;
+            console.log('[Agora] local video state:', state, 'reason:', reason);
+            if (reason !== 0 && reason !== 1) {
+              setError(`Camera capture error (state ${state}, reason ${reason}).`);
+            }
+          },
+        };
+        handler = eventHandler;
+        engine.registerEventHandler(eventHandler);
+
+        const initResult = engine.initialize({
+          appId: AGORA_APP_ID,
+          channelProfile: ChannelProfileType.ChannelProfileLiveBroadcasting,
+          autoRegisterAgoraExtensions: true,
+        });
+        console.log('[Agora] initialize:', initResult);
+
+        if (role === 'host') {
+          const videoResult = engine.enableVideo();
+          console.log('[Agora] enableVideo:', videoResult);
+
+          // Keep capture conservative for devices whose camera HAL rejects
+          // Agora's higher default resolutions.
+          const configResult = engine.setCameraCapturerConfiguration({
+            format: { width: 640, height: 480, fps: 15 },
+          });
+          console.log('[Agora] camera configuration:', configResult);
+
+          // Do not put beauty/face shaping on the critical camera startup
+          // path. Those are optional extensions and can return -1 without
+          // preventing ordinary camera capture.
+          previewTimeout = setTimeout(() => {
+            if (cancelled || engineRef.current !== engine) return;
+            const previewResult = engine.startPreview();
+            console.log('[Agora] startPreview:', previewResult);
+            if (previewResult !== 0) {
+              setError(`Camera preview failed (Agora code ${previewResult}).`);
+            }
+          }, 150);
+        } else {
+          engine.enableVideo();
+        }
+
+        if (!cancelled) setEngineReady(true);
+      } catch (e: any) {
+        if (!cancelled) {
+          setEngineReady(false);
+          setError(e?.message ?? 'Unable to initialize the camera.');
+        }
+      }
+    };
+
+    setup();
+
+    return () => {
+      cancelled = true;
+      if (previewTimeout) clearTimeout(previewTimeout);
+      const engine = engineRef.current;
+      if (!engine) return;
+
+      try {
+        if (shouldApplyVisualEffects) {
+          engine.enableVirtualBackground(false, { background_source_type: VBG_SOURCE_BLUR, blur_degree: BLUR_DEGREE_LARGE }, VBG_SEGMENTATION);
+          engine.setBeautyEffectOptions(false, {
+            lighteningContrastLevel: 1,
+            lighteningLevel: 0,
+            smoothnessLevel: 0,
+            rednessLevel: 0,
+          });
+        }
+        engine.stopPreview();
+        engine.leaveChannel();
+      } catch {}
+
+      if (handler) engine.unregisterEventHandler(handler);
+      engine.release();
+      engineRef.current = null;
+      setEngineReady(false);
+      setIsJoined(false);
+      setRemoteUid(null);
+      // leaveChannel() above already leaves any joinChannelEx connection
+      // too (per the SDK's own docs), so only the React-side state needs
+      // resetting here, not a second native leaveChannelEx call.
+      secondaryChannelIdRef.current = null;
+      setSecondaryConnection(null);
+      setSecondaryRemoteUid(null);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userAccount, role]);
+
+  // ── Join the channel once channelId/token become available ─────────
+  // Deliberately a separate effect from engine creation above: engine
+  // creation must NOT depend on channelId/token, or the preview-then-go-
+  // live flow would tear down and recreate the engine (flickering the
+  // camera, losing whatever beauty settings were being previewed) the
+  // moment createLiveSession() finally produces a real channel. This
+  // effect only ever calls a method on the already-existing engine —
+  // it never creates or destroys one.
+  useEffect(() => {
+    const engine = engineRef.current;
+    if (!engineReady || !engine || !channelId || !token || !userAccount || isJoined) return;
+
+    engine.joinChannelWithUserAccount(token, channelId, userAccount, {
+      clientRoleType:
+        role === 'host'
+          ? ClientRoleType.ClientRoleBroadcaster
+          : ClientRoleType.ClientRoleAudience,
+      publishCameraTrack: role === 'host',
+      publishMicrophoneTrack: role === 'host',
+    });
+  }, [channelId, token, userAccount, role, isJoined, engineReady]);
+
+  // ── Apply beauty whenever state changes ────────────────────────────
+  useEffect(() => {
+    const engine = engineRef.current;
+    if (!engine || !shouldApplyVisualEffects) return;
+
+    // setBeautyEffectOptions depends on a separate native extension
+    // library (libagora_clear_vision_extension per the SDK's own docs)
+    // and can return -4 ("device/feature not supported") silently — this
+    // was never being checked, so if the call was failing, nothing would
+    // ever surface it. Logging the return code to find out which case
+    // this actually is before guessing further.
+    const result = engine.setBeautyEffectOptions(beauty.enabled, {
+      lighteningContrastLevel: beauty.lighteningContrastLevel,
+      lighteningLevel: beauty.lighteningLevel,
+      smoothnessLevel: beauty.smoothnessLevel,
+      rednessLevel: beauty.rednessLevel,
+    });
+    if (result !== 0) {
+      console.warn(`setBeautyEffectOptions returned ${result} (non-zero = failure, see Agora error codes)`);
+    }
+  }, [beauty, shouldApplyVisualEffects]);
+
+  // ── Apply face shaping whenever state changes ───────────────────────
+  // setFaceShapeAreaOptions fine-tunes individual areas, but per the
+  // SDK's own docs it only has a visible effect once a baseline style is
+  // active via setFaceShapeBeautyOptions — so enabling any area here
+  // also turns on a neutral baseline style (Natural, mid intensity) for
+  // the area adjustments to actually apply on top of.
+  useEffect(() => {
+    const engine = engineRef.current;
+    if (!engine || !shouldApplyVisualEffects) return;
+
+    const styleResult = engine.setFaceShapeBeautyOptions(faceShape.enabled, {
+      shapeStyle: 2, // FaceShapeBeautyStyleNatural — minimal adjustment beyond the explicit area values below
+      styleIntensity: faceShape.enabled ? 50 : 0,
+    });
+    if (styleResult !== 0) {
+      console.warn(`setFaceShapeBeautyOptions returned ${styleResult} (non-zero = failure — if this is -4 or similar, face shaping may need enabling as a value-added service on your Agora Console account, separate from anything in this code)`);
+    }
+
+    if (!faceShape.enabled) return;
+
+    const areas: [FaceShapeArea, number][] = [
+      [FaceShapeArea.FaceShapeAreaEyescale, faceShape.eyes],
+      [FaceShapeArea.FaceShapeAreaNosegeneral, faceShape.nose],
+      [FaceShapeArea.FaceShapeAreaChin, faceShape.chin],
+      [FaceShapeArea.FaceShapeAreaForehead, faceShape.forehead],
+      [FaceShapeArea.FaceShapeAreaMouthlip, faceShape.lip],
+    ];
+    for (const [shapeArea, shapeIntensity] of areas) {
+      engine.setFaceShapeAreaOptions({ shapeArea, shapeIntensity });
+    }
+  }, [faceShape, shouldApplyVisualEffects]);
+
+  // ── Apply virtual background whenever state changes ────────────────
+  useEffect(() => {
+    const engine = engineRef.current;
+    if (!engine || !shouldApplyVisualEffects) return;
+
+    if (background.mode === 'none') {
+      engine.enableVirtualBackground(false, { background_source_type: VBG_SOURCE_BLUR, blur_degree: BLUR_DEGREE_LARGE }, VBG_SEGMENTATION);
+      return;
+    }
+
+    let source: any;
+    switch (background.mode) {
+      case 'blur':
+        source = {
+          background_source_type: VBG_SOURCE_BLUR,
+          blur_degree:
+            background.blurDegree === 'small'
+              ? BLUR_DEGREE_SMALL
+              : BLUR_DEGREE_LARGE,
+        };
+        break;
+      case 'color':
+        source = {
+          background_source_type: VBG_SOURCE_COLOR,
+          color: cssColorToInt(background.color ?? '#1E1E2E'),
+        };
+        break;
+      case 'image':
+        source = {
+          background_source_type: VBG_SOURCE_IMAGE,
+          source: background.imagePath ?? '',
+        };
+        break;
+    }
+
+    engine.enableVirtualBackground(true, source, VBG_SEGMENTATION);
+  }, [background, shouldApplyVisualEffects]);
+
+  const setBeauty = (next: Partial<BeautyState>) => {
+    setBeautyState((current) => ({ ...current, ...next }));
+  };
+
+  const setBackground = (next: Partial<BackgroundState>) => {
+    setBackgroundState((current) => ({ ...current, ...next }));
+  };
+
+  const setFaceShape = (next: Partial<FaceShapeState>) => {
+    setFaceShapeState((current) => ({ ...current, ...next }));
+  };
+
+  const toggleMic = () => {
+    setIsMicMuted((current) => {
+      const next = !current;
+      engineRef.current?.muteLocalAudioStream(next);
+      return next;
+    });
+  };
+
+  const switchCamera = () => {
+    engineRef.current?.switchCamera();
+  };
+
+  // PK battles — join the opponent's channel as a silent audience member
+  // (no video/audio published there) while staying joined to your own
+  // primary channel via the existing joinChannel call. localUid: 0 lets
+  // the SDK auto-assign, since nothing in this secondary channel needs
+  // to reference the local viewer's own uid — only the opponent's
+  // remote video matters here.
+  const joinSecondaryChannel = (secondaryChannelId: string, secondaryToken: string) => {
+    const engine = engineRef.current;
+    if (!engine) return;
+    const connection: RtcConnection = { channelId: secondaryChannelId, localUid: 0 };
+    secondaryChannelIdRef.current = secondaryChannelId;
+    setSecondaryConnection(connection);
+    (engine as IRtcEngineEx).joinChannelEx(secondaryToken, connection, {
+      clientRoleType: ClientRoleType.ClientRoleAudience,
+      autoSubscribeAudio: true,
+      autoSubscribeVideo: true,
+      publishCameraTrack: false,
+      publishMicrophoneTrack: false,
+    });
+  };
+
+  const leaveSecondaryChannel = () => {
+    const engine = engineRef.current;
+    const connection = secondaryConnection;
+    if (!engine || !connection) return;
+    try {
+      (engine as IRtcEngineEx).leaveChannelEx(connection);
+    } catch {}
+    secondaryChannelIdRef.current = null;
+    setSecondaryConnection(null);
+    setSecondaryRemoteUid(null);
+  };
+
+  const toggleNoiseSuppression = () => {
+    setIsNoiseSuppressionOn((current) => {
+      const next = !current;
+      engineRef.current?.setAINSMode(next, AudioAinsMode.AinsModeBalanced);
+      return next;
+    });
+  };
+
+  const startMusic = (uri: string, name: string, loop = false) => {
+    const engine = engineRef.current;
+    if (!engine) return;
+    setMusicError(null);
+    // The SDK wants a plain file path, not a file:// address.
+    const path = uri.replace(/^file:\/\//, '');
+    const result = engine.startAudioMixing(path, false, loop ? -1 : 1);
+    if (result !== 0) {
+      setMusicError('That file could not be played. Try an MP3 or M4A.');
+      return;
+    }
+    engine.adjustAudioMixingVolume(60);
+    setMusic({ name, status: 'playing', volume: 60 });
+  };
+  const pauseMusic = () => {
+    engineRef.current?.pauseAudioMixing();
+    setMusic((m) => (m ? { ...m, status: 'paused' } : m));
+  };
+  const resumeMusic = () => {
+    engineRef.current?.resumeAudioMixing();
+    setMusic((m) => (m ? { ...m, status: 'playing' } : m));
+  };
+  const stopMusic = () => {
+    engineRef.current?.stopAudioMixing();
+    setMusic(null);
+  };
+  const setMusicVolume = (volume: number) => {
+    engineRef.current?.adjustAudioMixingVolume(Math.round(volume));
+    setMusic((m) => (m ? { ...m, volume: Math.round(volume) } : m));
+  };
+
+  return {
+    isJoined,
+    remoteUid,
+    error,
+    // Exposed so the screen can key its AgoraVideoView off this — a
+    // SurfaceView created before it has real, laid-out dimensions is a
+    // well-known class of Android bug where the surface can permanently
+    // fail to bind properly, even if the view is later resized. Since
+    // the diagnostic logging now shows capture genuinely succeeding
+    // (state 1, reason 0 — actively capturing) while the screen still
+    // shows blank, the fault has narrowed specifically to rendering,
+    // not capture — this is the most likely remaining explanation and a
+    // cheap, real thing to test: force a fresh SurfaceView only once the
+    // engine (and by extension, the screen's layout) is confirmed ready,
+    // rather than whatever moment React happens to mount it.
+    engineReady,
+    isMicMuted,
+    toggleMic,
+    switchCamera,
+    isNoiseSuppressionOn,
+    toggleNoiseSuppression,
+    beauty,
+    setBeauty,
+    background,
+    setBackground,
+    faceShape,
+    setFaceShape,
+    secondaryRemoteUid,
+    secondaryConnection,
+    joinSecondaryChannel,
+    leaveSecondaryChannel,
+    music,
+    musicError,
+    startMusic,
+    pauseMusic,
+    resumeMusic,
+    stopMusic,
+    setMusicVolume,
+  };
+}
